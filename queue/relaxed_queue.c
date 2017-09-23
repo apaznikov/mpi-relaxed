@@ -10,22 +10,12 @@ int myrank = 0;
 typedef int bool;
 typedef int elem_t;
 
+/* Current state of the circular buffer */
 typedef struct {
     int head;                   /* Write pointer */
     int tail;                   /* Read pointer */
     int size;                   /* Max number of elements */
 } circbuf_state_t;
-
-/* Circular buffer. */
-typedef struct {
-    MPI_Aint basedisp;          /* Base address of circbuf */
-    elem_t *buf;                /* Physical buffer */
-    MPI_Aint datadisp;          /* Address of buf (data) */
-    circbuf_state_t state;
-    int lock;                   /* Spinlock variable */
-    /* lock_t lock;                #<{(| Spinlock variable |)}># */
-    MPI_Win win;
-} circbuf_t;
 
 /* Auxiliary buffers for lock. */
 typedef struct {
@@ -35,14 +25,22 @@ typedef struct {
     int result;
 } lock_t;
 
+/* Circular buffer. */
+typedef struct {
+    MPI_Aint basedisp;          /* Base address of circbuf */
+    elem_t *buf;                /* Physical buffer */
+    MPI_Aint datadisp;          /* Address of buf (data) */
+    circbuf_state_t state;
+    lock_t lock;                /* Spinlock variable */
+    MPI_Win win;
+} circbuf_t;
+
 /* Process-oblivious circular buffer info */
 typedef struct {
-    size_t lock_offset;
+    size_t lock_state_offset;
     size_t state_offset;
+    size_t head_offset;
     size_t buf_offset;
-    int lock_locked;
-    int lock_unlocked;
-    int lock_result;
 } circbuf_info_t;
 
 circbuf_info_t circbuf_info;
@@ -55,11 +53,11 @@ enum {
 };
 
 /* error_msg: Print error message. */
-static void error_msg(const char *msg)
+static void error_msg(const char *msg, int _errno)
 {
     fprintf(stderr, "%s", msg);
-    if (errno != 0)
-        fprintf(stderr, ": %s", strerror(errno));
+    if (_errno != 0)
+        fprintf(stderr, ": %s", strerror(_errno));
     fprintf(stderr, "\n");
 }
 
@@ -67,10 +65,11 @@ static void error_msg(const char *msg)
 static void circbuf_info_init(void)
 {
     circbuf_info.state_offset = offsetof(circbuf_t, state);
-    circbuf_info.lock_offset = offsetof(circbuf_t, lock);
+    circbuf_info.head_offset = circbuf_info.state_offset +
+                               offsetof(circbuf_state_t, head);
+    circbuf_info.lock_state_offset = offsetof(circbuf_t, lock) + 
+                                     offsetof(lock_t, state);
     circbuf_info.buf_offset = offsetof(circbuf_t, buf);
-    circbuf_info.lock_locked = 1;
-    circbuf_info.lock_unlocked = 0;
 }
 
 /* circbuf_init: Init circular buffer with specified size. */
@@ -79,7 +78,7 @@ static int circbuf_init(circbuf_t **circbuf, int size)
     /* *circbuf = malloc(sizeof(circbuf_t)); */
     MPI_Alloc_mem(sizeof(circbuf_t), MPI_INFO_NULL, circbuf);
     if (*circbuf == NULL) {
-        error_msg("malloc() failed for circbuf");
+        error_msg("malloc() failed for circbuf", errno);
         return CODE_ERROR;
     }
 
@@ -90,7 +89,7 @@ static int circbuf_init(circbuf_t **circbuf, int size)
     /* (*circbuf)->buf = malloc(size_bytes); */
     MPI_Alloc_mem(size_bytes, MPI_INFO_NULL, &(*circbuf)->buf);
     if ((*circbuf)->buf == NULL) {
-        error_msg("malloc() failed for circbuf->buf");
+        error_msg("malloc() failed for circbuf->buf", errno);
         return CODE_ERROR;
     }
 
@@ -102,7 +101,10 @@ static int circbuf_init(circbuf_t **circbuf, int size)
     (*circbuf)->state.tail = 0;
     (*circbuf)->state.size = size;
 
-    (*circbuf)->lock = 0;
+    (*circbuf)->lock.state = 0;
+    (*circbuf)->lock.unlocked = 0;
+    (*circbuf)->lock.locked = 1;
+    (*circbuf)->lock.result = 0;
 
     circbuf_info_init();
 
@@ -115,31 +117,29 @@ static int circbuf_init(circbuf_t **circbuf, int size)
 }
 
 /* mutex_lock: */
-static void mutex_lock(MPI_Win win, MPI_Aint basedisp, int rank)
+static void mutex_lock(lock_t *lock, MPI_Win win, MPI_Aint basedisp, int rank)
 {
     /* MPI_Win_lock_all(0, circbuf->win); */
     MPI_Win_lock(MPI_LOCK_EXCLUSIVE, rank, 0, win); 
 
     do {
-        MPI_Compare_and_swap(&circbuf_info.lock_locked, 
-                             &circbuf_info.lock_unlocked, 
-                             &circbuf_info.lock_result, MPI_INT, rank,
+        MPI_Compare_and_swap(&lock->locked, &lock->unlocked, 
+                             &lock->result, MPI_INT, rank,
                              MPI_Aint_add(basedisp, 
-                                          circbuf_info.lock_offset),
+                                          circbuf_info.lock_state_offset),
                              win);
 
         MPI_Win_flush(rank, win);
-    } while (circbuf_info.lock_result == 0); 
+    } while (lock->result == 0); 
 }
 
 /* mutex_unlock: */
-static void mutex_unlock(MPI_Win win, MPI_Aint basedisp, int rank)
+static void mutex_unlock(lock_t *lock, MPI_Win win, MPI_Aint basedisp, int rank)
 {
-    MPI_Compare_and_swap(&circbuf_info.lock_unlocked, 
-                         &circbuf_info.lock_locked, 
-                         &circbuf_info.lock_result, MPI_INT, rank,
+    MPI_Compare_and_swap(&lock->unlocked, &lock->locked, 
+                         &lock->result, MPI_INT, rank,
                          MPI_Aint_add(basedisp, 
-                                      circbuf_info.lock_offset),
+                                      circbuf_info.lock_state_offset),
                          win);
 
     MPI_Win_flush(rank, win);
@@ -182,40 +182,45 @@ static void put_elem(MPI_Win win, MPI_Aint datadisp, int head,
     MPI_Win_flush(rank, win);
 }
 
+/* refresh_head: Increment head pointer and put to remote circbuf. */
+static void refresh_head(MPI_Win win, MPI_Aint basedisp, int *head, int size, 
+                         int rank)
+{
+    *head = (*head + 1) % size;
+
+    MPI_Put(head, 1, MPI_INT, rank,
+            MPI_Aint_add(basedisp, circbuf_info.head_offset),
+            1, MPI_INT, win);
+
+    MPI_Win_flush(rank, win);
+}
+
 /* circbuf_insert: Insert element to the tail of buffer. */
-static int circbuf_insert(MPI_Win win, elem_t elem, 
+static int circbuf_insert(circbuf_t *circbuf, elem_t elem, 
                           MPI_Aint basedisp, MPI_Aint datadisp, int rank)
 {
-    mutex_lock(win, basedisp, rank);
+    mutex_lock(&circbuf->lock, circbuf->win, basedisp, rank);
 
     /* State of remote buffer */
     circbuf_state_t state;
 
-    get_circbuf_state(win, basedisp, rank, &state);
+    get_circbuf_state(circbuf->win, basedisp, rank, &state);
 
     printf("%d \t head = %d, tail = %d, size = %d\n", 
            myrank, state.head, state.tail, state.size);
 
     if (isfull(state)) {
-        error_msg("can't insert element: buffer is full");
+        error_msg("Can't insert an element: buffer is full", 0);
         return CODE_ERROR;
     }
 
-    put_elem(win, datadisp, state.head, rank, elem);
+    put_elem(circbuf->win, datadisp, state.head, rank, elem);
 
-    mutex_unlock(win, basedisp, rank);
+    refresh_head(circbuf->win, basedisp, &state.head, state.size, rank);
 
-    printf("result = %d\n", circbuf_info.lock_result);
+    mutex_unlock(&circbuf->lock, circbuf->win, basedisp, rank);
 
-    /*
-     * 1. Get write address.
-     *      -- get size
-     *      -- get capacity
-     * 2. Get element.
-     * 3. CAS for address.
-     *
-     * Maybe Fetch_and_op??
-     */
+    printf("result = %d\n", circbuf->lock.result);
 
     return CODE_SUCCESS;
 }
@@ -244,7 +249,7 @@ static int disps_init(MPI_Aint **basedisps, MPI_Aint **datadisps,
     MPI_Alloc_mem(sizeof(MPI_Aint) * nproc, MPI_INFO_NULL, datadisps);
 
     if ((*basedisps == NULL) || (*datadisps == NULL)) {
-        error_msg("malloc() failed for circbuf->buf");
+        error_msg("malloc() failed for circbuf->buf", errno);
         return CODE_ERROR;
     }
 
@@ -288,7 +293,7 @@ int main(int argc, char *argv[])
     rc = circbuf_init(&circbuf, CIRCBUF_STARTSIZE);
 
     if (rc != CODE_SUCCESS) {
-        error_msg("init_circbuf() failed");
+        error_msg("init_circbuf() failed", 0);
         goto error_lbl;
     }
 
@@ -297,29 +302,39 @@ int main(int argc, char *argv[])
     rc = disps_init(&basedisps, &datadisps, circbuf, nproc);
 
     if (rc != CODE_SUCCESS) {
-        error_msg("disps_init() failed");
+        error_msg("disps_init() failed", 0);
         goto error_lbl;
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-    printf("%d \t before \t lock = %d\n", myrank, circbuf->lock);
+    printf("%d \t before \t lock = %d\n", myrank, circbuf->lock.state);
 
     /* if (myrank == 1) { */
         elem_t elem = myrank + 10;
         int remote_rank = (myrank + 1) % 2;
         circbuf_print(circbuf, "before");
 
-        circbuf_insert(circbuf->win, elem, 
-                       basedisps[remote_rank], datadisps[remote_rank], 
-                       remote_rank);
-
-        circbuf_print(circbuf, "after");
+        int i;
+        for (i = 0; i < 9; i++) {
+            circbuf_insert(circbuf, elem, 
+                           basedisps[remote_rank], datadisps[remote_rank], 
+                           remote_rank);
+            
+            MPI_Barrier(MPI_COMM_WORLD);
+            if (myrank) {
+                printf("%d \t head = %d\n", myrank, circbuf->state.head);
+                circbuf_print(circbuf, "after");
+            }
+        }
+        
     /* } */
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-    printf("%d \t after all: \t lock = %d\n", myrank, circbuf->lock);
+    circbuf_print(circbuf, "after");
+
+    printf("%d \t after all: \t lock = %d\n", myrank, circbuf->lock.state);
 
     /* int i; */
     /* elem_t elem = rank; */
