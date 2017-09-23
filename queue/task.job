@@ -1,0 +1,8 @@
+#PBS -N mpitask
+#PBS -l nodes=2:ppn=1
+#PBS -j oe
+#PBS -o stdout
+
+cd $PBS_O_WORKDIR
+
+mpiexec ./relaxed_queue
