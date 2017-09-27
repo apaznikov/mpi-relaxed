@@ -5,4 +5,4 @@
 
 cd $PBS_O_WORKDIR
 
-mpiexec ./relaxed_queue
+mpiexec ./bench

@@ -1,3 +1,9 @@
+/*
+ * relaxed_queue.h Relaxed distributed queue implementation on MPI
+ *
+ * (C) 2017 Alexey Paznikov <apaznikov@gmail.com> 
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -5,58 +11,16 @@
 #include <stddef.h>
 #include <mpi.h>
 
-int myrank = 0;
-
-typedef int bool;
-typedef int elem_t;
-
-/* Current state of the circular buffer */
-typedef struct {
-    int head;                   /* Write pointer */
-    int tail;                   /* Read pointer */
-    int size;                   /* Max number of elements */
-} circbuf_state_t;
-
-/* Auxiliary buffers for lock. */
-typedef struct {
-    int state;
-    int unlocked; 
-    int locked;
-    int result;
-} lock_t;
-
-/* Circular buffer. */
-typedef struct {
-    MPI_Aint basedisp;          /* Base address of circbuf */
-    elem_t *buf;                /* Physical buffer */
-    MPI_Aint datadisp;          /* Address of buf (data) */
-    circbuf_state_t state;
-    lock_t lock;                /* Spinlock variable */
-    MPI_Win win;
-} circbuf_t;
-
-/* Process-oblivious circular buffer info */
-typedef struct {
-    size_t lock_state_offset;
-    size_t state_offset;
-    size_t head_offset;
-    size_t tail_offset;
-    size_t buf_offset;
-} circbuf_info_t;
+#include "relaxed_queue.h"
 
 circbuf_info_t circbuf_info;
 
-enum {
-    NELEM             = 100,
-    CIRCBUF_STARTSIZE = 10,
-    CODE_ERROR        = 1,
-    CODE_SUCCESS      = 0
-};
-
 bool ISDBG = 0;
 
+extern int myrank, nproc;
+
 /* error_msg: Print error message. */
-static void error_msg(const char *msg, int _errno)
+void error_msg(const char *msg, int _errno)
 {
     fprintf(stderr, "%s", msg);
     if (_errno != 0)
@@ -77,8 +41,28 @@ static void circbuf_info_init(void)
     circbuf_info.buf_offset = offsetof(circbuf_t, buf);
 }
 
+/* circbuf_free: Initialize array for displaceemnts of all procs. */
+static int disps_init(circbuf_t *circbuf, int nproc)
+{
+    MPI_Alloc_mem(sizeof(MPI_Aint) * nproc, MPI_INFO_NULL, &circbuf->basedisp);
+    MPI_Alloc_mem(sizeof(MPI_Aint) * nproc, MPI_INFO_NULL, &circbuf->datadisp);
+
+    if ((circbuf->basedisp == NULL) || (circbuf->datadisp == NULL)) {
+        error_msg("malloc() failed for circbuf->buf", errno);
+        return CODE_ERROR;
+    }
+
+    MPI_Allgather(&circbuf->basedisp_local, 1, MPI_AINT,
+                  circbuf->basedisp, 1, MPI_AINT, MPI_COMM_WORLD);
+
+    MPI_Allgather(&circbuf->datadisp_local, 1, MPI_AINT,
+                  circbuf->datadisp, 1, MPI_AINT, MPI_COMM_WORLD);
+
+    return CODE_SUCCESS;
+}
+
 /* circbuf_init: Init circular buffer with specified size. */
-static int circbuf_init(circbuf_t **circbuf, int size)
+int circbuf_init(circbuf_t **circbuf, int size)
 {
     /* *circbuf = malloc(sizeof(circbuf_t)); */
     MPI_Alloc_mem(sizeof(circbuf_t), MPI_INFO_NULL, circbuf);
@@ -87,7 +71,7 @@ static int circbuf_init(circbuf_t **circbuf, int size)
         return CODE_ERROR;
     }
 
-    MPI_Get_address(*circbuf, &(*circbuf)->basedisp);
+    MPI_Get_address(*circbuf, &(*circbuf)->basedisp_local);
 
     const int size_bytes = sizeof(elem_t) * size;
 
@@ -100,7 +84,7 @@ static int circbuf_init(circbuf_t **circbuf, int size)
 
     memset((*circbuf)->buf, 0, size_bytes);
 
-    MPI_Get_address((*circbuf)->buf, &(*circbuf)->datadisp);
+    MPI_Get_address((*circbuf)->buf, &(*circbuf)->datadisp_local);
 
     (*circbuf)->state.head = (*circbuf)->state.tail = 0;
     (*circbuf)->state.size = size;
@@ -115,6 +99,13 @@ static int circbuf_init(circbuf_t **circbuf, int size)
 
     MPI_Win_attach((*circbuf)->win, *circbuf, sizeof(circbuf_t));
     MPI_Win_attach((*circbuf)->win, (*circbuf)->buf, size_bytes);
+
+    int rc = disps_init(*circbuf, nproc);
+
+    if (rc != CODE_SUCCESS) {
+        error_msg("disps_init() failed", 0);
+        return CODE_ERROR;
+    }
 
     return CODE_SUCCESS;
 }
@@ -136,7 +127,6 @@ static void end_RMA_epoch(MPI_Win win, int rank)
 /* mutex_lock: */
 static void mutex_lock(lock_t *lock, MPI_Win win, MPI_Aint basedisp, int rank)
 {
-
     do {
         MPI_Compare_and_swap(&lock->locked, &lock->unlocked, 
                              &lock->result, MPI_INT, rank,
@@ -231,9 +221,9 @@ static void refresh_tail(MPI_Win win, MPI_Aint basedisp, int *tail, int size,
     MPI_Win_flush(rank, win);
 }
 
-/* circbuf_insert: Insert element to the tail of buffer. */
-int circbuf_insert(elem_t elem, circbuf_t *circbuf, 
-                   MPI_Aint basedisp, MPI_Aint datadisp, int rank)
+/* circbuf_insert: Insert an element to the tail of the circular buffer 
+ * on specified process. */
+int circbuf_insert_proc(elem_t elem, circbuf_t *circbuf, int rank)
 {
     /*
      * 1. Acquire lock.
@@ -245,12 +235,12 @@ int circbuf_insert(elem_t elem, circbuf_t *circbuf,
      */
     begin_RMA_epoch(circbuf->win, rank);
 
-    mutex_lock(&circbuf->lock, circbuf->win, basedisp, rank);
+    mutex_lock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
 
     if (!ISDBG) {
     circbuf_state_t state;  /* State of remote buffer */
 
-    get_circbuf_state(circbuf->win, basedisp, rank, &state);
+    get_circbuf_state(circbuf->win, circbuf->basedisp[rank], rank, &state);
 
     printf("%d \t head = %d, tail = %d, size = %d\n", 
            myrank, state.head, state.tail, state.size);
@@ -261,12 +251,13 @@ int circbuf_insert(elem_t elem, circbuf_t *circbuf,
         return CODE_ERROR;
     }
 
-    put_elem(circbuf->win, datadisp, state.head, rank, elem);
+    put_elem(circbuf->win, circbuf->datadisp[rank], state.head, rank, elem);
 
-    refresh_head(circbuf->win, basedisp, &state.head, state.size, rank);
+    refresh_head(circbuf->win, circbuf->basedisp[rank], 
+                 &state.head, state.size, rank);
     }
 
-    mutex_unlock(&circbuf->lock, circbuf->win, basedisp, rank);
+    mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
 
     end_RMA_epoch(circbuf->win, rank);
 
@@ -275,17 +266,17 @@ int circbuf_insert(elem_t elem, circbuf_t *circbuf,
     return CODE_SUCCESS;
 }
 
-/* circbuf_remove: Remove element from circular buffer. */
-int circbuf_remove(elem_t *elem, circbuf_t *circbuf,
-                   MPI_Aint basedisp, MPI_Aint datadisp, int rank)
+/* circbuf_remove: Remove an element from the circular buffer
+ * on specified process. */
+int circbuf_remove_proc(elem_t *elem, circbuf_t *circbuf, int rank)
 {
     begin_RMA_epoch(circbuf->win, rank);
 
-    mutex_lock(&circbuf->lock, circbuf->win, basedisp, rank);
+    mutex_lock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
 
     circbuf_state_t state;  /* State of remote buffer */
 
-    get_circbuf_state(circbuf->win, basedisp, rank, &state);
+    get_circbuf_state(circbuf->win, circbuf->basedisp[rank], rank, &state);
 
     /* printf("%d \t head = %d, tail = %d, size = %d\n",  */
     /*        myrank, state.head, state.tail, state.size); */
@@ -296,11 +287,12 @@ int circbuf_remove(elem_t *elem, circbuf_t *circbuf,
         return CODE_ERROR;
     }
 
-    get_elem(circbuf->win, datadisp, state.tail, rank, elem);
+    get_elem(circbuf->win, circbuf->datadisp[rank], state.tail, rank, elem);
 
-    refresh_tail(circbuf->win, basedisp, &state.tail, state.size, rank);
+    refresh_tail(circbuf->win, circbuf->basedisp[rank], 
+                 &state.tail, state.size, rank);
 
-    mutex_unlock(&circbuf->lock, circbuf->win, basedisp, rank);
+    mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
 
     end_RMA_epoch(circbuf->win, rank);
 
@@ -310,45 +302,19 @@ int circbuf_remove(elem_t *elem, circbuf_t *circbuf,
 }
 
 /* circbuf_free: Free memory and so on. */
-static void circbuf_free(circbuf_t *circbuf)
+void circbuf_free(circbuf_t *circbuf)
 {
     /* free(circbuf->buf); */
     /* free(circbuf); */
 
     MPI_Free_mem(circbuf->buf);
     MPI_Free_mem(circbuf);
-}
-
-/* circbuf_free: Initialize array for displaceemnts of all procs. */
-static int disps_init(MPI_Aint **basedisps, MPI_Aint **datadisps,
-                      circbuf_t *circbuf, int nproc)
-{
-    MPI_Alloc_mem(sizeof(MPI_Aint) * nproc, MPI_INFO_NULL, basedisps);
-    MPI_Alloc_mem(sizeof(MPI_Aint) * nproc, MPI_INFO_NULL, datadisps);
-
-    if ((*basedisps == NULL) || (*datadisps == NULL)) {
-        error_msg("malloc() failed for circbuf->buf", errno);
-        return CODE_ERROR;
-    }
-
-    MPI_Allgather(&circbuf->basedisp, 1, MPI_AINT,
-                  *basedisps, 1, MPI_AINT, MPI_COMM_WORLD);
-
-    MPI_Allgather(&circbuf->datadisp, 1, MPI_AINT,
-                  *datadisps, 1, MPI_AINT, MPI_COMM_WORLD);
-
-    return CODE_SUCCESS;
-}
-
-/* disps_free: Free memory for displacements. */
-static void disps_free(MPI_Aint *basedisps, MPI_Aint *datadisps)
-{
-    MPI_Free_mem(basedisps);
-    MPI_Free_mem(datadisps);
+    MPI_Free_mem(circbuf->basedisp);
+    MPI_Free_mem(circbuf->datadisp);
 }
 
 /* circbuf_print: Print circbuf (useful for debug) */
-static void circbuf_print(circbuf_t *circbuf, const char *label)
+void circbuf_print(circbuf_t *circbuf, const char *label)
 {
     printf("%d \t %s \t ", myrank, label);
     int i;
@@ -360,98 +326,4 @@ static void circbuf_print(circbuf_t *circbuf, const char *label)
         printf("%d ", circbuf->buf[i]);
     }
     printf("\n");
-}
-
-int main(int argc, char *argv[]) 
-{
-    int nproc, rc;
-
-    MPI_Init(&argc, &argv);
-    MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
-    MPI_Comm_size(MPI_COMM_WORLD, &nproc);
-
-    circbuf_t *circbuf;
-
-    rc = circbuf_init(&circbuf, CIRCBUF_STARTSIZE);
-
-    if (rc != CODE_SUCCESS) {
-        error_msg("init_circbuf() failed", 0);
-        goto error_lbl;
-    }
-
-    MPI_Aint *basedisps, *datadisps;
-
-    rc = disps_init(&basedisps, &datadisps, circbuf, nproc);
-
-    if (rc != CODE_SUCCESS) {
-        error_msg("disps_init() failed", 0);
-        goto error_lbl;
-    }
-
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    printf("%d \t before \t lock = %d\n", myrank, circbuf->lock.state);
-
-    /* if (myrank == 1) { */
-        int remote_rank = (myrank + 1) % 2;
-        circbuf_print(circbuf, "before");
-        elem_t *elem = malloc(sizeof(elem_t));
-
-        int i;
-        for (i = 0; i < 11; i++) {
-            *elem = (myrank + 1) * 10 + i;
-            circbuf_insert(*elem, circbuf, 
-                           basedisps[remote_rank], datadisps[remote_rank], 
-                           remote_rank);
-            
-            MPI_Barrier(MPI_COMM_WORLD); /* DEBUG */
-            printf("%d \t head = %d\n", myrank, circbuf->state.head);
-            circbuf_print(circbuf, "after");
-        }
-
-        for (i = 0; i < 10; i++) {
-            circbuf_remove(elem, circbuf, 
-                           basedisps[remote_rank], datadisps[remote_rank], 
-                           remote_rank);
-            
-            MPI_Barrier(MPI_COMM_WORLD); /* DEBUG */
-            printf("%d \t tail = %d\n", myrank, circbuf->state.tail);
-            circbuf_print(circbuf, "after");
-        }
-
-        for (i = 0; i < 5; i++) {
-            *elem = (myrank + 1) * 100 + i;
-            circbuf_insert(*elem, circbuf, 
-                           basedisps[remote_rank], datadisps[remote_rank], 
-                           remote_rank);
-            
-            MPI_Barrier(MPI_COMM_WORLD); /* DEBUG */
-            printf("%d \t head = %d\n", myrank, circbuf->state.head);
-            circbuf_print(circbuf, "after");
-        }
-
-        free(elem);
-        
-    /* } */
-
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    /* circbuf_print(circbuf, "after"); */
-
-    /* printf("%d \t after all: \t lock = %d\n", myrank, circbuf->lock.state); */
-
-    /* int i; */
-    /* elem_t elem = rank; */
-    /* int remote_rank = 0; */
-    /* for (i = 0; i < NELEM; i++) { */
-    /*     circbuf_insert(circbuf, elem, disps[remote_rank], remote_rank); */
-    /* } */
-    
-    circbuf_free(circbuf);
-    disps_free(basedisps, datadisps);
-
-error_lbl:
-    MPI_Finalize();
-
-    return 0;
 }

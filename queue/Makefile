@@ -1,15 +1,16 @@
+PROG=bench
+PROG_OBJ=$(PROG).o relaxed_queue.o
+
 CC=mpicc
-CFLAGS=-Wall
-PROG=relaxed_queue
-SRC=$(PROG).c
+CFLAGS=-Wall 
 
-SRCDIR=.
-BINDIR=.
+all: $(PROG)
 
-all: compile
+$(PROG): $(PROG_OBJ) $(RELAXED_QUEUE)
+	$(CC) $(CFLAGS) $^ -o $@ 
 
-compile: $(SRCDIR)/$(SRC)
-	$(CC) $(CFLAGS) $(SRCDIR)/$(SRC) -o $(BINDIR)/$(PROG)
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@ 
 
 clean:
-	rm $(BINDIR)/$(PROG)
+	rm -rf $(PROG) $(PROG_OBJ) 
