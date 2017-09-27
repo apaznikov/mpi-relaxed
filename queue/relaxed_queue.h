@@ -9,13 +9,18 @@
 #include <mpi.h>
 
 enum {
-    CIRCBUF_STARTSIZE = 10,
+    CIRCBUF_STARTSIZE = 10,     /* Initial size of circbuf */
     CODE_ERROR        = 1,
     CODE_SUCCESS      = 0
 };
 
 typedef int bool;
-typedef int elem_t;
+typedef int val_t;
+
+typedef struct {
+    val_t val;                    /* Element's value */
+    double ts;                  /* Timestamp */
+} elem_t;
 
 /* Current state of the circular buffer */
 typedef struct {
@@ -58,6 +63,9 @@ int circbuf_init(circbuf_t **circbuf, int size);
 
 /* circbuf_free: Free memory and so on. */
 void circbuf_free(circbuf_t *circbuf);
+
+/* circbuf_insert: Choose randomly the queue and insert element into it. */
+int circbuf_insert(val_t val, circbuf_t *circbuf);
 
 /* circbuf_insert: Insert an element to the tail of the circular buffer 
  * on specified process. */

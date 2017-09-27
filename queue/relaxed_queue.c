@@ -61,6 +61,18 @@ static int disps_init(circbuf_t *circbuf, int nproc)
     return CODE_SUCCESS;
 }
 
+static void init_random_generator(void)
+{
+    /* 10 because it's empirically better for two procs:
+     * processes generate different sequences. */
+    srandom(myrank * 10); 
+}
+
+static int get_rand(int maxval)
+{
+    return random() % maxval;
+}
+
 /* circbuf_init: Init circular buffer with specified size. */
 int circbuf_init(circbuf_t **circbuf, int size)
 {
@@ -106,6 +118,8 @@ int circbuf_init(circbuf_t **circbuf, int size)
         error_msg("disps_init() failed", 0);
         return CODE_ERROR;
     }
+
+    init_random_generator();
 
     return CODE_SUCCESS;
 }
@@ -166,9 +180,9 @@ static bool isfull(circbuf_state_t state)
 static void get_circbuf_state(MPI_Win win, MPI_Aint basedisp, 
                               int rank, circbuf_state_t *state)
 {
-    MPI_Get(state, sizeof(*state), MPI_BYTE, rank, 
+    MPI_Get(state, sizeof(circbuf_state_t), MPI_BYTE, rank, 
             MPI_Aint_add(basedisp, circbuf_info.state_offset),
-            sizeof(*state), MPI_BYTE, win);
+            sizeof(circbuf_state_t), MPI_BYTE, win);
 
     MPI_Win_flush(rank, win);
 }
@@ -177,9 +191,9 @@ static void get_circbuf_state(MPI_Win win, MPI_Aint basedisp,
 static void put_elem(MPI_Win win, MPI_Aint datadisp, int head, 
                      int rank, elem_t elem)
 {
-    MPI_Put(&elem, sizeof(elem), MPI_BYTE, rank,
-            MPI_Aint_add(datadisp, sizeof(elem) * head),
-            sizeof(elem), MPI_BYTE, win);
+    MPI_Put(&elem, sizeof(elem_t), MPI_BYTE, rank,
+            MPI_Aint_add(datadisp, sizeof(elem_t) * head),
+            sizeof(elem_t), MPI_BYTE, win);
 
     MPI_Win_flush(rank, win);
 }
@@ -188,9 +202,9 @@ static void put_elem(MPI_Win win, MPI_Aint datadisp, int head,
 static void get_elem(MPI_Win win, MPI_Aint datadisp, int tail, 
                      int rank, elem_t *elem)
 {
-    MPI_Get(elem, sizeof(elem), MPI_BYTE, rank,
-            MPI_Aint_add(datadisp, sizeof(elem) * tail),
-            sizeof(elem), MPI_BYTE, win);
+    MPI_Get(elem, sizeof(elem_t), MPI_BYTE, rank,
+            MPI_Aint_add(datadisp, sizeof(elem_t) * tail),
+            sizeof(elem_t), MPI_BYTE, win);
 
     MPI_Win_flush(rank, win);
 }
@@ -242,8 +256,8 @@ int circbuf_insert_proc(elem_t elem, circbuf_t *circbuf, int rank)
 
     get_circbuf_state(circbuf->win, circbuf->basedisp[rank], rank, &state);
 
-    printf("%d \t head = %d, tail = %d, size = %d\n", 
-           myrank, state.head, state.tail, state.size);
+    /* printf("%d \t INSERT head = %d, tail = %d, size = %d\n",  */
+    /*        myrank, state.head, state.tail, state.size); */
 
     if (isfull(state)) {
         error_msg("Can't insert an element: buffer is full", 0);
@@ -266,6 +280,8 @@ int circbuf_insert_proc(elem_t elem, circbuf_t *circbuf, int rank)
     return CODE_SUCCESS;
 }
 
+/* int circbuf_insert(elem_t elem, circbuf */
+
 /* circbuf_remove: Remove an element from the circular buffer
  * on specified process. */
 int circbuf_remove_proc(elem_t *elem, circbuf_t *circbuf, int rank)
@@ -278,7 +294,7 @@ int circbuf_remove_proc(elem_t *elem, circbuf_t *circbuf, int rank)
 
     get_circbuf_state(circbuf->win, circbuf->basedisp[rank], rank, &state);
 
-    /* printf("%d \t head = %d, tail = %d, size = %d\n",  */
+    /* printf("%d \t REMOVE head = %d, tail = %d, size = %d\n",  */
     /*        myrank, state.head, state.tail, state.size); */
 
     if (isempty(state)) {
@@ -297,6 +313,27 @@ int circbuf_remove_proc(elem_t *elem, circbuf_t *circbuf, int rank)
     end_RMA_epoch(circbuf->win, rank);
 
     /* printf("result = %d\n", circbuf->lock.result); */
+
+    return CODE_SUCCESS;
+}
+
+/* get_timestamp: Get current timestamp */
+static double get_timestamp(void)
+{
+    return MPI_Wtime();
+}
+
+/* circbuf_insert: Choose randomly the queue and insert element into it. */
+int circbuf_insert(val_t val, circbuf_t *circbuf)
+{
+    int rank = get_rand(nproc);
+
+    elem_t *elem = malloc(sizeof(elem_t));
+    elem->val = val;
+    elem->ts = get_timestamp();
+
+    printf("%d \t insert to %d\n", myrank, rank);
+    circbuf_insert_proc(*elem, circbuf, rank);
 
     return CODE_SUCCESS;
 }
@@ -323,7 +360,7 @@ void circbuf_print(circbuf_t *circbuf, const char *label)
             printf("(h)");
         if (circbuf->state.tail == i)
             printf("(t)");
-        printf("%d ", circbuf->buf[i]);
+        printf("%d ", circbuf->buf[i].val);
     }
     printf("\n");
 }
