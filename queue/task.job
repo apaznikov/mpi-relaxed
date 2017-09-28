@@ -1,8 +1,9 @@
 #PBS -N mpitask
-#PBS -l nodes=2:ppn=1
+#PBS -l nodes=4:ppn=2
 #PBS -j oe
 #PBS -o stdout
 
 cd $PBS_O_WORKDIR
 
+# export MPI_WTIME_IS_GLOBAL=1
 mpiexec ./bench

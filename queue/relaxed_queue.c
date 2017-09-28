@@ -53,10 +53,10 @@ static int disps_init(circbuf_t *circbuf, int nproc)
     }
 
     MPI_Allgather(&circbuf->basedisp_local, 1, MPI_AINT,
-                  circbuf->basedisp, 1, MPI_AINT, MPI_COMM_WORLD);
+                  circbuf->basedisp, 1, MPI_AINT, circbuf->comm);
 
     MPI_Allgather(&circbuf->datadisp_local, 1, MPI_AINT,
-                  circbuf->datadisp, 1, MPI_AINT, MPI_COMM_WORLD);
+                  circbuf->datadisp, 1, MPI_AINT, circbuf->comm);
 
     return CODE_SUCCESS;
 }
@@ -74,7 +74,7 @@ static int get_rand(int maxval)
 }
 
 /* circbuf_init: Init circular buffer with specified size. */
-int circbuf_init(circbuf_t **circbuf, int size)
+int circbuf_init(circbuf_t **circbuf, int size, MPI_Comm comm)
 {
     /* *circbuf = malloc(sizeof(circbuf_t)); */
     MPI_Alloc_mem(sizeof(circbuf_t), MPI_INFO_NULL, circbuf);
@@ -82,6 +82,8 @@ int circbuf_init(circbuf_t **circbuf, int size)
         error_msg("malloc() failed for circbuf", errno);
         return CODE_ERROR;
     }
+
+    (*circbuf)->comm = comm;
 
     MPI_Get_address(*circbuf, &(*circbuf)->basedisp_local);
 
@@ -107,7 +109,7 @@ int circbuf_init(circbuf_t **circbuf, int size)
 
     circbuf_info_init();
 
-    MPI_Win_create_dynamic(MPI_INFO_NULL, MPI_COMM_WORLD, &(*circbuf)->win);
+    MPI_Win_create_dynamic(MPI_INFO_NULL, (*circbuf)->comm, &(*circbuf)->win);
 
     MPI_Win_attach((*circbuf)->win, *circbuf, sizeof(circbuf_t));
     MPI_Win_attach((*circbuf)->win, (*circbuf)->buf, size_bytes);
@@ -160,7 +162,6 @@ static void mutex_unlock(lock_t *lock, MPI_Win win, MPI_Aint basedisp, int rank)
                          MPI_Aint_add(basedisp, 
                                       circbuf_info.lock_state_offset),
                          win);
-
     /* MPI_Win_flush(rank, win); */
 }
 
@@ -251,7 +252,6 @@ int circbuf_insert_proc(elem_t elem, circbuf_t *circbuf, int rank)
 
     mutex_lock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
 
-    if (!ISDBG) {
     circbuf_state_t state;  /* State of remote buffer */
 
     get_circbuf_state(circbuf->win, circbuf->basedisp[rank], rank, &state);
@@ -269,7 +269,6 @@ int circbuf_insert_proc(elem_t elem, circbuf_t *circbuf, int rank)
 
     refresh_head(circbuf->win, circbuf->basedisp[rank], 
                  &state.head, state.size, rank);
-    }
 
     mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
 
@@ -279,8 +278,6 @@ int circbuf_insert_proc(elem_t elem, circbuf_t *circbuf, int rank)
 
     return CODE_SUCCESS;
 }
-
-/* int circbuf_insert(elem_t elem, circbuf */
 
 /* circbuf_remove: Remove an element from the circular buffer
  * on specified process. */
@@ -317,6 +314,46 @@ int circbuf_remove_proc(elem_t *elem, circbuf_t *circbuf, int rank)
     return CODE_SUCCESS;
 }
 
+/* circbuf_get_elem: Get an element from proc's circbuf 
+ * (not finalize epoch and critical section). */
+static int circbuf_get_elem(elem_t *elem, circbuf_state_t *state, 
+                            circbuf_t *circbuf, int rank)
+{
+    begin_RMA_epoch(circbuf->win, rank);
+
+    mutex_lock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
+
+    get_circbuf_state(circbuf->win, circbuf->basedisp[rank], rank, state);
+
+    if (isempty(*state)) {
+        error_msg("Can't remove an element: buffer is empty", 0);
+        end_RMA_epoch(circbuf->win, rank);
+        return CODE_ERROR;
+    }
+
+    get_elem(circbuf->win, circbuf->datadisp[rank], state->tail, rank, elem);
+
+    return CODE_SUCCESS;
+}
+
+/* circbuf_get_elem_finalize: Complete all epochs, release lock
+ * and optionally refresh tail. Remove_flag signs if element is removing. */
+static void circbuf_get_elem_finalize(circbuf_state_t state, 
+                                      circbuf_t *circbuf, int rank,
+                                      bool remove_flag) 
+{
+    if (remove_flag) {
+        printf("%d \t remove rank %d tail %d\n", 
+                myrank, rank, state.tail);
+        refresh_tail(circbuf->win, circbuf->basedisp[rank], 
+                     &state.tail, state.size, rank);
+    }
+
+    mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
+
+    end_RMA_epoch(circbuf->win, rank);
+}
+
 /* get_timestamp: Get current timestamp */
 static double get_timestamp(void)
 {
@@ -328,15 +365,59 @@ int circbuf_insert(val_t val, circbuf_t *circbuf)
 {
     int rank = get_rand(nproc);
 
-    elem_t *elem = malloc(sizeof(elem_t));
-    elem->val = val;
-    elem->ts = get_timestamp();
+    elem_t elem;
+    elem.val = val;
+    elem.ts = get_timestamp();
 
-    printf("%d \t insert to %d\n", myrank, rank);
-    circbuf_insert_proc(*elem, circbuf, rank);
+    /* printf("%d \t insert to %d\n", myrank, rank); */
+    circbuf_insert_proc(elem, circbuf, rank);
 
     return CODE_SUCCESS;
 }
+
+/* circbuf_remove: */
+int circbuf_remove(val_t *val, circbuf_t *circbuf)
+{
+    elem_t elem_cand[NQUEUES_REMOVE];
+    circbuf_state_t states[NQUEUES_REMOVE];
+    int ranks[NQUEUES_REMOVE];
+
+    /* Random choose queues and get the candidate elements */
+    int i;
+    for (i = 0; i < NQUEUES_REMOVE; i++) {
+        int rank = get_rand(nproc);
+        ranks[i] = rank;
+        circbuf_get_elem(&elem_cand[i], &states[i], circbuf, rank);
+        printf("%d \t remove from %d elem %d ts %f\n", 
+                myrank, rank, elem_cand[i].val, elem_cand[i].ts);
+    }
+
+    /* Compare candidate elements by timestamp and choose the with minimal
+     * timestamp */
+    double ts_min = elem_cand[0].ts;
+    *val = elem_cand[0].val;
+    int best_rank = ranks[0];
+    for (i = 1; i < NQUEUES_REMOVE; i++) {
+        if (elem_cand[i].ts < ts_min) {
+            ts_min = elem_cand[i].ts;
+            *val = elem_cand[i].val;
+            best_rank = ranks[i];
+        }
+    }
+
+    printf("%d \t rank %d is best with ts %f\n", myrank, best_rank, ts_min);
+
+    /* Finalize epochs and critical sections */
+    for (i = 0; i < NQUEUES_REMOVE; i++) {
+        bool remove_flag = (ranks[i] == best_rank);
+        /* printf("rank %d remove_flag = %d bool %d\n", ranks[i], remove_flag, */
+        /*         ranks[i] == best_rank); */
+        circbuf_get_elem_finalize(states[i], circbuf, ranks[i], remove_flag);
+    }
+
+    return CODE_SUCCESS;
+}
+
 
 /* circbuf_free: Free memory and so on. */
 void circbuf_free(circbuf_t *circbuf)

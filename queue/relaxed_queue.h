@@ -10,6 +10,9 @@
 
 enum {
     CIRCBUF_STARTSIZE = 10,     /* Initial size of circbuf */
+    /* Number of queues from which we get the elements during remove operation,
+     * compare it and choose the best */
+    NQUEUES_REMOVE    = 3,
     CODE_ERROR        = 1,
     CODE_SUCCESS      = 0
 };
@@ -47,6 +50,7 @@ typedef struct {
     circbuf_state_t state;      /* Current state of circbuf */
     lock_t lock;                /* Spinlock variable */
     MPI_Win win;
+    MPI_Comm comm;
 } circbuf_t;
 
 /* Process-oblivious circular buffer info */
@@ -59,13 +63,16 @@ typedef struct {
 } circbuf_info_t;
 
 /* circbuf_init: Init circular buffer with specified size. */
-int circbuf_init(circbuf_t **circbuf, int size);
+int circbuf_init(circbuf_t **circbuf, int size, MPI_Comm comm);
 
 /* circbuf_free: Free memory and so on. */
 void circbuf_free(circbuf_t *circbuf);
 
 /* circbuf_insert: Choose randomly the queue and insert element into it. */
 int circbuf_insert(val_t val, circbuf_t *circbuf);
+
+/* circbuf_remove: */
+int circbuf_remove(val_t *val, circbuf_t *circbuf);
 
 /* circbuf_insert: Insert an element to the tail of the circular buffer 
  * on specified process. */
