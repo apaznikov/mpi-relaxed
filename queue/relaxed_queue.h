@@ -8,16 +8,17 @@
 
 #include <mpi.h>
 
+#include "common.h"
+
 enum {
     CIRCBUF_STARTSIZE = 10,     /* Initial size of circbuf */
     /* Number of queues from which we get the elements during remove operation,
      * compare it and choose the best */
-    NQUEUES_REMOVE    = 3,
+    NQUEUES_REMOVE    = 8,
     CODE_ERROR        = 1,
     CODE_SUCCESS      = 0
 };
 
-typedef int bool;
 typedef int val_t;
 
 typedef struct {
@@ -51,6 +52,7 @@ typedef struct {
     lock_t lock;                /* Spinlock variable */
     MPI_Win win;
     MPI_Comm comm;
+    double ts_offset;           /* Timestamp offset from 0 process */
 } circbuf_t;
 
 /* Process-oblivious circular buffer info */

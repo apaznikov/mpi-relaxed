@@ -16,20 +16,6 @@ enum {
 
 int myrank = 0, nproc = 0;
 
-void get_attr() {
-    void *v;
-    int vval;
-    int flag;
-
-    MPI_Attr_get(MPI_COMM_WORLD, MPI_WTIME_IS_GLOBAL, &v, &flag);
-    if (flag) {
-        vval = *(int*)v;
-        printf("Value of \"MPI_WTIME_IS_GLOBAL\" is %d\n", vval);
-    } else {
-        printf("Error: cannot read the value of \"MPI_WTIME_IS_GLOBAL\"\n");
-    }
-}
-
 /* test_insert_remove: Test insert and remove operations 
  * for the whole circbuf */
 void test_insert_remove(circbuf_t *circbuf, MPI_Comm comm)
@@ -52,7 +38,7 @@ void test_insert_remove(circbuf_t *circbuf, MPI_Comm comm)
     usleep(1000);
 
     if (myrank == 0) {
-    for (i = 0; i < 1; i++) {
+    for (i = 0; i < 8; i++) {
         val_t val = 0;
         circbuf_remove(&val, circbuf);
 
@@ -60,7 +46,7 @@ void test_insert_remove(circbuf_t *circbuf, MPI_Comm comm)
         usleep(myrank * 1000);
         /* printf("%d \t tail = %d, val = %d\n",  */
         /*         myrank, circbuf->state.head, val); */
-        circbuf_print(circbuf, "REMOVE");
+        /* circbuf_print(circbuf, "REMOVE"); */
     }
     }
 
@@ -109,15 +95,33 @@ void test_insert_remove_proc(circbuf_t *circbuf, MPI_Comm comm)
     }
 }
 
+#include "mpigclock.h"
+
 int main(int argc, char *argv[]) 
 {
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
     MPI_Comm_size(MPI_COMM_WORLD, &nproc);
 
-    get_attr();
-
     circbuf_t *circbuf;
+
+    // DEBUG
+    //
+    /* MPI_Barrier(MPI_COMM_WORLD); */
+    /* printf("%d \t wtime %f\n", myrank, MPI_Wtime()); */
+    /* MPI_Barrier(MPI_COMM_WORLD); */
+
+    /* double rtt = 0; */
+    /* double offset = mpigclock_sync_linear(MPI_COMM_WORLD, 0, &rtt); */
+    /* printf("%d \t rtt = %f clock = %f\n", myrank, rtt, offset); */
+
+    /* MPI_Barrier(MPI_COMM_WORLD); */
+    /* printf("%d \t wtime (after) %f\n", myrank, MPI_Wtime() + offset); */
+    /* MPI_Barrier(MPI_COMM_WORLD); */
+
+    /* MPI_Finalize(); */
+    /* return 1; */
+    // DEBUG
 
     int rc = circbuf_init(&circbuf, CIRCBUF_STARTSIZE, MPI_COMM_WORLD);
 

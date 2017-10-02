@@ -42,6 +42,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #include <mpi.h>
 
@@ -54,6 +55,7 @@
 
 static double mpigclock_measure_offset_adaptive(MPI_Comm comm, int root, int peer, double *min_rtt, double root_offset);
 
+static void mpigclock_hpctimer_init(void);
 
 /*
  * mpigclock_sync_linear: Clock synchronization algorithm with O(n) steps.
@@ -62,6 +64,8 @@ double mpigclock_sync_linear(MPI_Comm comm, int root, double *rtt)
 {
     int peer, rank, commsize;
     double ret = 0;
+
+    mpigclock_hpctimer_init();
 
     MPI_Comm_rank(comm, &rank);
     MPI_Comm_size(comm, &commsize);
@@ -84,6 +88,8 @@ double mpigclock_sync_log(MPI_Comm comm, int root, double *rtt)
     int peer, rank, commsize;
     double root_offset = 0;
     double ret = 0;
+
+    mpigclock_hpctimer_init();
 
     MPI_Comm_rank(comm, &rank);
     MPI_Comm_size(comm, &commsize);
@@ -165,4 +171,21 @@ static double mpigclock_measure_offset_adaptive(MPI_Comm comm, int root, int pee
         rtt = 0.0;
     }
     return offset;
+}
+
+/* mpigclock_hpctimer_init: Init hpctimer inside mpigclock_sync functions. */
+static void mpigclock_hpctimer_init(void)
+{
+    static bool hpctimer_init_flag = false;
+
+    if (hpctimer_init_flag == false) {
+        int rc = hpctimer_initialize("MPI_Wtime");
+
+        if (rc == HPCTIMER_FAILURE) {
+            fprintf(stderr, "Fail to initialize hpc timer. Abort\n");
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+
+        hpctimer_init_flag = true;
+    }
 }

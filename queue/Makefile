@@ -3,10 +3,12 @@ PROG=bench
 MPISYNC_PATH=../mpisync
 MPISYNC=$(MPISYNC_PATH)/mpisync.o
 
-PROG_OBJ=$(PROG).o relaxed_queue.o $(MPISYNC)
+PROG_OBJ=$(PROG).o utils.o relaxed_queue.o $(MPISYNC)
+
+INCLUDE_PATH=$(MPISYNC_PATH)
 
 CC=mpicc
-CFLAGS=-Wall 
+CFLAGS=-Wall -I$(INCLUDE_PATH)
 
 all: $(PROG)
 

@@ -9,9 +9,12 @@
 #include <string.h>
 #include <errno.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include <mpi.h>
+#include <assert.h>
 
 #include "relaxed_queue.h"
+#include "utils.h"
 
 circbuf_info_t circbuf_info;
 
@@ -122,6 +125,10 @@ int circbuf_init(circbuf_t **circbuf, int size, MPI_Comm comm)
     }
 
     init_random_generator();
+
+    (*circbuf)->ts_offset = mpi_sync_time(comm);
+
+    assert(nproc >= NQUEUES_REMOVE);
 
     return CODE_SUCCESS;
 }
@@ -343,8 +350,6 @@ static void circbuf_get_elem_finalize(circbuf_state_t state,
                                       bool remove_flag) 
 {
     if (remove_flag) {
-        printf("%d \t remove rank %d tail %d\n", 
-                myrank, rank, state.tail);
         refresh_tail(circbuf->win, circbuf->basedisp[rank], 
                      &state.tail, state.size, rank);
     }
@@ -367,12 +372,21 @@ int circbuf_insert(val_t val, circbuf_t *circbuf)
 
     elem_t elem;
     elem.val = val;
-    elem.ts = get_timestamp();
+    elem.ts = get_timestamp() + circbuf->ts_offset;
 
     /* printf("%d \t insert to %d\n", myrank, rank); */
     circbuf_insert_proc(elem, circbuf, rank);
 
     return CODE_SUCCESS;
+}
+
+/* isfound: Search for key in base. */
+static bool isfound(int key, int *base, int nelem)
+{
+    for (int i = 0; i < nelem; i++)
+        if (base[i] == key)
+            return true;
+    return false;
 }
 
 /* circbuf_remove: */
@@ -383,13 +397,17 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
     int ranks[NQUEUES_REMOVE];
 
     /* Random choose queues and get the candidate elements */
-    int i;
-    for (i = 0; i < NQUEUES_REMOVE; i++) {
-        int rank = get_rand(nproc);
+    for (int i = 0; i < NQUEUES_REMOVE; i++) {
+        int rank = 0;
+        /* FIXME Optimize this search&found place. */
+        do {
+            rank = get_rand(nproc);
+        } while (isfound(rank, ranks, i));
+        
         ranks[i] = rank;
         circbuf_get_elem(&elem_cand[i], &states[i], circbuf, rank);
-        printf("%d \t remove from %d elem %d ts %f\n", 
-                myrank, rank, elem_cand[i].val, elem_cand[i].ts);
+        /* printf("%d \t remove from %d elem %d ts %f\n",  */
+        /*         myrank, rank, elem_cand[i].val, elem_cand[i].ts); */
     }
 
     /* Compare candidate elements by timestamp and choose the with minimal
@@ -397,7 +415,7 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
     double ts_min = elem_cand[0].ts;
     *val = elem_cand[0].val;
     int best_rank = ranks[0];
-    for (i = 1; i < NQUEUES_REMOVE; i++) {
+    for (int i = 1; i < NQUEUES_REMOVE; i++) {
         if (elem_cand[i].ts < ts_min) {
             ts_min = elem_cand[i].ts;
             *val = elem_cand[i].val;
@@ -408,7 +426,7 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
     printf("%d \t rank %d is best with ts %f\n", myrank, best_rank, ts_min);
 
     /* Finalize epochs and critical sections */
-    for (i = 0; i < NQUEUES_REMOVE; i++) {
+    for (int i = 0; i < NQUEUES_REMOVE; i++) {
         bool remove_flag = (ranks[i] == best_rank);
         /* printf("rank %d remove_flag = %d bool %d\n", ranks[i], remove_flag, */
         /*         ranks[i] == best_rank); */

@@ -7,7 +7,7 @@ CFLAGS=-Wall
 all: $(PROG)
 
 $(PROG): $(PROG_OBJ)
-	ld -r $< -o $@
+	ld -r $? -o $@
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@ 
