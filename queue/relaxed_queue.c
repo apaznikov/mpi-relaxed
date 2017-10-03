@@ -20,7 +20,7 @@ circbuf_info_t circbuf_info;
 
 bool ISDBG = 0;
 
-extern int myrank, nproc;
+extern int myrank;
 
 /* error_msg: Print error message. */
 void error_msg(const char *msg, int _errno)
@@ -88,6 +88,8 @@ int circbuf_init(circbuf_t **circbuf, int size, MPI_Comm comm)
 
     (*circbuf)->comm = comm;
 
+    MPI_Comm_size((*circbuf)->comm, &(*circbuf)->nproc);
+
     MPI_Get_address(*circbuf, &(*circbuf)->basedisp_local);
 
     const int size_bytes = sizeof(elem_t) * size;
@@ -117,7 +119,7 @@ int circbuf_init(circbuf_t **circbuf, int size, MPI_Comm comm)
     MPI_Win_attach((*circbuf)->win, *circbuf, sizeof(circbuf_t));
     MPI_Win_attach((*circbuf)->win, (*circbuf)->buf, size_bytes);
 
-    int rc = disps_init(*circbuf, nproc);
+    int rc = disps_init(*circbuf, (*circbuf)->nproc);
 
     if (rc != CODE_SUCCESS) {
         error_msg("disps_init() failed", 0);
@@ -128,7 +130,9 @@ int circbuf_init(circbuf_t **circbuf, int size, MPI_Comm comm)
 
     (*circbuf)->ts_offset = mpi_sync_time(comm);
 
-    assert(nproc >= NQUEUES_REMOVE);
+    (*circbuf)->nqueues_remove = NQUEUES_REMOVE;
+
+    assert((*circbuf)->nproc >= (*circbuf)->nqueues_remove);
 
     return CODE_SUCCESS;
 }
@@ -137,12 +141,14 @@ int circbuf_init(circbuf_t **circbuf, int size, MPI_Comm comm)
 static void begin_RMA_epoch(MPI_Win win, int rank)
 {
     /* MPI_Win_lock_all(0, win); */
+    printf("begin epoch %d\n", rank);
     MPI_Win_lock(MPI_LOCK_EXCLUSIVE, rank, 0, win); 
 }
 
 /* end_RMA_epoch: Complete passive RMA access epoch. */
 static void end_RMA_epoch(MPI_Win win, int rank)
 {
+    printf("end epoch %d\n", rank);
     /* MPI_Win_unlock_all(win); */
     MPI_Win_unlock(rank, win);
 }
@@ -268,8 +274,9 @@ int circbuf_insert_proc(elem_t elem, circbuf_t *circbuf, int rank)
 
     if (isfull(state)) {
         error_msg("Can't insert an element: buffer is full", 0);
+        mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
         end_RMA_epoch(circbuf->win, rank);
-        return CODE_ERROR;
+        return CODE_CIRCBUF_FULL;
     }
 
     put_elem(circbuf->win, circbuf->datadisp[rank], state.head, rank, elem);
@@ -302,9 +309,10 @@ int circbuf_remove_proc(elem_t *elem, circbuf_t *circbuf, int rank)
     /*        myrank, state.head, state.tail, state.size); */
 
     if (isempty(state)) {
-        error_msg("Can't remove an element: buffer is empty", 0);
+        error_msg("circbuf_remove_proc() failed: circbuf is empty", 0);
+        mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
         end_RMA_epoch(circbuf->win, rank);
-        return CODE_ERROR;
+        return CODE_CIRCBUF_EMPTY;
     }
 
     get_elem(circbuf->win, circbuf->datadisp[rank], state.tail, rank, elem);
@@ -331,11 +339,14 @@ static int circbuf_get_elem(elem_t *elem, circbuf_state_t *state,
     mutex_lock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
 
     get_circbuf_state(circbuf->win, circbuf->basedisp[rank], rank, state);
+    printf("%d \t state.head = %d state.tail = %d\n", 
+            myrank, state->head, state->tail);
 
     if (isempty(*state)) {
-        error_msg("Can't remove an element: buffer is empty", 0);
+        error_msg("circbuf_get_elem() failed: circbuf is empty", 0);
+        mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
         end_RMA_epoch(circbuf->win, rank);
-        return CODE_ERROR;
+        return CODE_CIRCBUF_EMPTY;
     }
 
     get_elem(circbuf->win, circbuf->datadisp[rank], state->tail, rank, elem);
@@ -350,11 +361,15 @@ static void circbuf_get_elem_finalize(circbuf_state_t state,
                                       bool remove_flag) 
 {
     if (remove_flag) {
+        fprintf(stderr, "refresh tail 1\n");
         refresh_tail(circbuf->win, circbuf->basedisp[rank], 
                      &state.tail, state.size, rank);
+        fprintf(stderr, "refresh tail 2\n");
     }
 
+    fprintf(stderr, "unlock 1 for %d\n", rank);
     mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
+    fprintf(stderr, "unlock 2 for %d\n", rank);
 
     end_RMA_epoch(circbuf->win, rank);
 }
@@ -368,7 +383,7 @@ static double get_timestamp(void)
 /* circbuf_insert: Choose randomly the queue and insert element into it. */
 int circbuf_insert(val_t val, circbuf_t *circbuf)
 {
-    int rank = get_rand(nproc);
+    int rank = get_rand(circbuf->nproc);
 
     elem_t elem;
     elem.val = val;
@@ -384,8 +399,10 @@ int circbuf_insert(val_t val, circbuf_t *circbuf)
 static bool isfound(int key, int *base, int nelem)
 {
     for (int i = 0; i < nelem; i++)
-        if (base[i] == key)
+        if (base[i] == key) {
             return true;
+            printf("found %d\n", key);
+        }
     return false;
 }
 
@@ -396,16 +413,40 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
     circbuf_state_t states[NQUEUES_REMOVE];
     int ranks[NQUEUES_REMOVE];
 
+    /* Number of queues for candidates */
+    int nqueues_remove = circbuf->nqueues_remove;
+    /* Total rest number of available queues */
+    int avail_queues = circbuf->nproc;
+    int i = 0;
+
     /* Random choose queues and get the candidate elements */
-    for (int i = 0; i < NQUEUES_REMOVE; i++) {
+    while (i < nqueues_remove) {
         int rank = 0;
         /* FIXME Optimize this search&found place. */
         do {
-            rank = get_rand(nproc);
+            rank = get_rand(circbuf->nproc);
         } while (isfound(rank, ranks, i));
         
-        ranks[i] = rank;
-        circbuf_get_elem(&elem_cand[i], &states[i], circbuf, rank);
+        fprintf(stderr, "try to %d\n", rank);
+        int rc = circbuf_get_elem(&elem_cand[i], &states[i], circbuf, rank);
+
+        if (rc == CODE_CIRCBUF_EMPTY) {
+            fprintf(stderr, "EMPTY!\n");
+            avail_queues--;
+            if (avail_queues < nqueues_remove) {
+                nqueues_remove = avail_queues;
+                
+                if (nqueues_remove == 0) {
+                    error_msg("circbuf_remove() failed: circbuf is empty", 0);
+                    return CODE_CIRCBUF_EMPTY;
+                }
+            }
+        } else {
+            fprintf(stderr, "OK!\n");
+            ranks[i] = rank;
+            i++;
+        }
+
         /* printf("%d \t remove from %d elem %d ts %f\n",  */
         /*         myrank, rank, elem_cand[i].val, elem_cand[i].ts); */
     }
@@ -415,7 +456,7 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
     double ts_min = elem_cand[0].ts;
     *val = elem_cand[0].val;
     int best_rank = ranks[0];
-    for (int i = 1; i < NQUEUES_REMOVE; i++) {
+    for (int i = 1; i < nqueues_remove; i++) {
         if (elem_cand[i].ts < ts_min) {
             ts_min = elem_cand[i].ts;
             *val = elem_cand[i].val;
@@ -423,13 +464,14 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
         }
     }
 
-    printf("%d \t rank %d is best with ts %f\n", myrank, best_rank, ts_min);
+    printf("%d \t rank %d is the best with ts %f\n", myrank, best_rank, ts_min);
 
     /* Finalize epochs and critical sections */
-    for (int i = 0; i < NQUEUES_REMOVE; i++) {
+    for (int i = 0; i < nqueues_remove; i++) {
         bool remove_flag = (ranks[i] == best_rank);
         /* printf("rank %d remove_flag = %d bool %d\n", ranks[i], remove_flag, */
         /*         ranks[i] == best_rank); */
+        printf("finalize %d\n", ranks[i]);
         circbuf_get_elem_finalize(states[i], circbuf, ranks[i], remove_flag);
     }
 

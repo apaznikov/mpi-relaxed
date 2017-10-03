@@ -11,18 +11,20 @@
 #include "common.h"
 
 enum {
-    CIRCBUF_STARTSIZE = 10,     /* Initial size of circbuf */
+    CIRCBUF_STARTSIZE  = 10,     /* Initial size of circbuf */
     /* Number of queues from which we get the elements during remove operation,
      * compare it and choose the best */
-    NQUEUES_REMOVE    = 8,
-    CODE_ERROR        = 1,
-    CODE_SUCCESS      = 0
+    NQUEUES_REMOVE     = 2,
+    CODE_SUCCESS       = 0,
+    CODE_ERROR         = 1,
+    CODE_CIRCBUF_FULL  = 2,
+    CODE_CIRCBUF_EMPTY = 3
 };
 
 typedef int val_t;
 
 typedef struct {
-    val_t val;                    /* Element's value */
+    val_t val;                  /* Element's value */
     double ts;                  /* Timestamp */
 } elem_t;
 
@@ -50,9 +52,11 @@ typedef struct {
     MPI_Aint *datadisp;         /* Address of buf (data) (all processes) */
     circbuf_state_t state;      /* Current state of circbuf */
     lock_t lock;                /* Spinlock variable */
-    MPI_Win win;
-    MPI_Comm comm;
+    MPI_Win win;                /* RMA access window */
+    MPI_Comm comm;              /* Communicator for the circbuf distribution */
+    int nproc;                  /* Number of processes in communicator */
     double ts_offset;           /* Timestamp offset from 0 process */
+    int nqueues_remove;         /* Number of queues for remove candidiates */
 } circbuf_t;
 
 /* Process-oblivious circular buffer info */

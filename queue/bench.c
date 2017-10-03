@@ -21,7 +21,7 @@ int myrank = 0, nproc = 0;
 void test_insert_remove(circbuf_t *circbuf, MPI_Comm comm)
 {
     int i;
-    for (i = 0; i < 5; i++) {
+    for (i = 0; i < 2; i++) {
         val_t val = (myrank + 1) * 10 + i;
         circbuf_insert(val, circbuf);
 
@@ -38,7 +38,7 @@ void test_insert_remove(circbuf_t *circbuf, MPI_Comm comm)
     usleep(1000);
 
     if (myrank == 0) {
-    for (i = 0; i < 8; i++) {
+    for (i = 0; i < 5; i++) {
         val_t val = 0;
         circbuf_remove(&val, circbuf);
 
