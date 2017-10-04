@@ -11,7 +11,7 @@
 #include "common.h"
 
 enum {
-    CIRCBUF_STARTSIZE  = 10,     /* Initial size of circbuf */
+    CIRCBUF_STARTSIZE  = 20,     /* Initial size of circbuf */
     /* Number of queues from which we get the elements during remove operation,
      * compare it and choose the best */
     NQUEUES_REMOVE     = 2,

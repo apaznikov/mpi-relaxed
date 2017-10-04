@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <unistd.h>
 
 #include "relaxed_queue.h"
@@ -16,12 +17,14 @@ enum {
 
 int myrank = 0, nproc = 0;
 
+bool ISDBG = false;
+
 /* test_insert_remove: Test insert and remove operations 
  * for the whole circbuf */
 void test_insert_remove(circbuf_t *circbuf, MPI_Comm comm)
 {
     int i;
-    for (i = 0; i < 2; i++) {
+    for (i = 0; i < 25; i++) {
         val_t val = (myrank + 1) * 10 + i;
         circbuf_insert(val, circbuf);
 
@@ -37,17 +40,16 @@ void test_insert_remove(circbuf_t *circbuf, MPI_Comm comm)
     MPI_Barrier(comm); /* DEBUG */
     usleep(1000);
 
-    if (myrank == 0) {
-    for (i = 0; i < 5; i++) {
+    for (i = 0; i < 25; i++) {
+        printf("%d \t iter %d\n", myrank, i);
         val_t val = 0;
         circbuf_remove(&val, circbuf);
 
         /* MPI_Barrier(comm); #<{(| DEBUG |)}># */
-        usleep(myrank * 1000);
+        /* usleep(myrank * 1000); */
         /* printf("%d \t tail = %d, val = %d\n",  */
         /*         myrank, circbuf->state.head, val); */
         /* circbuf_print(circbuf, "REMOVE"); */
-    }
     }
 
     MPI_Barrier(comm); /* DEBUG */
@@ -102,6 +104,11 @@ int main(int argc, char *argv[])
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
     MPI_Comm_size(MPI_COMM_WORLD, &nproc);
+
+    /* char *env = getenv("MPICH_ASYNC_PROGRESS"); */
+    /* printf("%d \t env %s\n", myrank, env); */
+    /* MPI_Finalize(); */
+    /* return 0; */
 
     circbuf_t *circbuf;
 

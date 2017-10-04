@@ -1,8 +1,9 @@
 #PBS -N mpitask
-#PBS -l nodes=2:ppn=4
+#PBS -l nodes=2:ppn=2
 #PBS -j oe
 #PBS -o stdout
 
 cd $PBS_O_WORKDIR
 
+# export MPICH_ASYNC_PROGRESS=1
 mpiexec ./bench

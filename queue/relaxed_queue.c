@@ -18,14 +18,14 @@
 
 circbuf_info_t circbuf_info;
 
-bool ISDBG = 0;
+extern bool ISDBG;
 
 extern int myrank;
 
 /* error_msg: Print error message. */
 void error_msg(const char *msg, int _errno)
 {
-    fprintf(stderr, "%s", msg);
+    fprintf(stderr, "%d \t %s", myrank, msg);
     if (_errno != 0)
         fprintf(stderr, ": %s", strerror(_errno));
     fprintf(stderr, "\n");
@@ -141,14 +141,12 @@ int circbuf_init(circbuf_t **circbuf, int size, MPI_Comm comm)
 static void begin_RMA_epoch(MPI_Win win, int rank)
 {
     /* MPI_Win_lock_all(0, win); */
-    printf("begin epoch %d\n", rank);
-    MPI_Win_lock(MPI_LOCK_EXCLUSIVE, rank, 0, win); 
+    MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, win); 
 }
 
 /* end_RMA_epoch: Complete passive RMA access epoch. */
 static void end_RMA_epoch(MPI_Win win, int rank)
 {
-    printf("end epoch %d\n", rank);
     /* MPI_Win_unlock_all(win); */
     MPI_Win_unlock(rank, win);
 }
@@ -256,24 +254,22 @@ int circbuf_insert_proc(elem_t elem, circbuf_t *circbuf, int rank)
     /*
      * 1. Acquire lock.
      * 2. Remotely get state of circbuf.
-     * 3. If circbuf is full, return.
+     * 3. If circbuf is full, return with an error.
      * 4. Put element into buffer.
-     * 5. Increment and refresh buffer.
+     * 5. Increment and refresh head pointer.
      * 6. Release lock. 
      */
+
     begin_RMA_epoch(circbuf->win, rank);
 
     mutex_lock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
 
-    circbuf_state_t state;  /* State of remote buffer */
+    circbuf_state_t state;
 
     get_circbuf_state(circbuf->win, circbuf->basedisp[rank], rank, &state);
 
-    /* printf("%d \t INSERT head = %d, tail = %d, size = %d\n",  */
-    /*        myrank, state.head, state.tail, state.size); */
-
     if (isfull(state)) {
-        error_msg("Can't insert an element: buffer is full", 0);
+        error_msg("circbuf_insert_proc() failed: buffer is full", 0);
         mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
         end_RMA_epoch(circbuf->win, rank);
         return CODE_CIRCBUF_FULL;
@@ -288,8 +284,6 @@ int circbuf_insert_proc(elem_t elem, circbuf_t *circbuf, int rank)
 
     end_RMA_epoch(circbuf->win, rank);
 
-    /* printf("result = %d\n", circbuf->lock.result); */
-
     return CODE_SUCCESS;
 }
 
@@ -297,16 +291,22 @@ int circbuf_insert_proc(elem_t elem, circbuf_t *circbuf, int rank)
  * on specified process. */
 int circbuf_remove_proc(elem_t *elem, circbuf_t *circbuf, int rank)
 {
+    /*
+     * 1. Acquire lock.
+     * 2. Remotely get state of circbuf.
+     * 3. If circbuf is empty, return with an error.
+     * 4. Get element from the buffer.
+     * 5. Increment and refresh tail pointer.
+     * 6. Release lock. 
+     */
+
     begin_RMA_epoch(circbuf->win, rank);
 
     mutex_lock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
 
-    circbuf_state_t state;  /* State of remote buffer */
+    circbuf_state_t state;
 
     get_circbuf_state(circbuf->win, circbuf->basedisp[rank], rank, &state);
-
-    /* printf("%d \t REMOVE head = %d, tail = %d, size = %d\n",  */
-    /*        myrank, state.head, state.tail, state.size); */
 
     if (isempty(state)) {
         error_msg("circbuf_remove_proc() failed: circbuf is empty", 0);
@@ -324,23 +324,29 @@ int circbuf_remove_proc(elem_t *elem, circbuf_t *circbuf, int rank)
 
     end_RMA_epoch(circbuf->win, rank);
 
-    /* printf("result = %d\n", circbuf->lock.result); */
-
     return CODE_SUCCESS;
 }
 
-/* circbuf_get_elem: Get an element from proc's circbuf 
- * (not finalize epoch and critical section). */
-static int circbuf_get_elem(elem_t *elem, circbuf_state_t *state, 
+/* circbuf_fetch_elem: Get an element from proc's circbuf 
+ * (not increment tail pointer and not finalize epoch and critical section). */
+static int circbuf_fetch_elem(elem_t *elem, circbuf_state_t *state, 
                             circbuf_t *circbuf, int rank)
 {
+    /*
+     * 1. Acquire lock.
+     * 2. Remotely get state of circbuf.
+     * 3. If circbuf is empty, return with an error.
+     * 4. Get element from the buffer.
+     */
+
     begin_RMA_epoch(circbuf->win, rank);
 
     mutex_lock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
 
     get_circbuf_state(circbuf->win, circbuf->basedisp[rank], rank, state);
-    printf("%d \t state.head = %d state.tail = %d\n", 
-            myrank, state->head, state->tail);
+
+    /* printf("%d \t rank %d: state.head = %d state.tail = %d\n",  */
+    /*         myrank, rank, state->head, state->tail); */
 
     if (isempty(*state)) {
         error_msg("circbuf_get_elem() failed: circbuf is empty", 0);
@@ -360,16 +366,17 @@ static void circbuf_get_elem_finalize(circbuf_state_t state,
                                       circbuf_t *circbuf, int rank,
                                       bool remove_flag) 
 {
+    /*
+     * 1. Increment and put tail pointer for the remote queue.
+     * 2. Release lock.
+     */
+
     if (remove_flag) {
-        fprintf(stderr, "refresh tail 1\n");
         refresh_tail(circbuf->win, circbuf->basedisp[rank], 
                      &state.tail, state.size, rank);
-        fprintf(stderr, "refresh tail 2\n");
     }
 
-    fprintf(stderr, "unlock 1 for %d\n", rank);
     mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
-    fprintf(stderr, "unlock 2 for %d\n", rank);
 
     end_RMA_epoch(circbuf->win, rank);
 }
@@ -390,7 +397,11 @@ int circbuf_insert(val_t val, circbuf_t *circbuf)
     elem.ts = get_timestamp() + circbuf->ts_offset;
 
     /* printf("%d \t insert to %d\n", myrank, rank); */
-    circbuf_insert_proc(elem, circbuf, rank);
+    int rc = circbuf_insert_proc(elem, circbuf, rank);
+    if (rc == CODE_CIRCBUF_FULL) {
+        error_msg("circbuf_insert() failed: circbuf is full", 0);
+        return CODE_CIRCBUF_FULL;
+    }
 
     return CODE_SUCCESS;
 }
@@ -415,6 +426,7 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
 
     /* Number of queues for candidates */
     int nqueues_remove = circbuf->nqueues_remove;
+
     /* Total rest number of available queues */
     int avail_queues = circbuf->nproc;
     int i = 0;
@@ -427,11 +439,9 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
             rank = get_rand(circbuf->nproc);
         } while (isfound(rank, ranks, i));
         
-        fprintf(stderr, "try to %d\n", rank);
-        int rc = circbuf_get_elem(&elem_cand[i], &states[i], circbuf, rank);
+        int rc = circbuf_fetch_elem(&elem_cand[i], &states[i], circbuf, rank);
 
         if (rc == CODE_CIRCBUF_EMPTY) {
-            fprintf(stderr, "EMPTY!\n");
             avail_queues--;
             if (avail_queues < nqueues_remove) {
                 nqueues_remove = avail_queues;
@@ -442,7 +452,6 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
                 }
             }
         } else {
-            fprintf(stderr, "OK!\n");
             ranks[i] = rank;
             i++;
         }
@@ -471,7 +480,6 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
         bool remove_flag = (ranks[i] == best_rank);
         /* printf("rank %d remove_flag = %d bool %d\n", ranks[i], remove_flag, */
         /*         ranks[i] == best_rank); */
-        printf("finalize %d\n", ranks[i]);
         circbuf_get_elem_finalize(states[i], circbuf, ranks[i], remove_flag);
     }
 
