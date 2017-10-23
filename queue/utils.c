@@ -6,12 +6,27 @@
 
 #include <mpi.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdbool.h>
 
 #include "utils.h"
 #include "mpigclock.h"
 
 extern int myrank, nproc;
+
+/* init_random_generator: Initialize random generator. */
+void init_random_generator(void)
+{
+    /* 10 because it's empirically better for two procs:
+     * processes generate different sequences. */
+    srandom(myrank * 10); 
+}
+
+/* get_rand: Get random value from 0 to (maxval - 1). */
+int get_rand(int maxval)
+{
+    return random() % maxval;
+}
 
 /* issynchronized: Check is MPI_Wtime is synchronized. */
 static bool issynchronized(MPI_Comm comm) 

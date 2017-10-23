@@ -64,18 +64,6 @@ static int disps_init(circbuf_t *circbuf, int nproc)
     return CODE_SUCCESS;
 }
 
-static void init_random_generator(void)
-{
-    /* 10 because it's empirically better for two procs:
-     * processes generate different sequences. */
-    srandom(myrank * 10); 
-}
-
-static int get_rand(int maxval)
-{
-    return random() % maxval;
-}
-
 /* circbuf_init: Init circular buffer with specified size. */
 int circbuf_init(circbuf_t **circbuf, int size, MPI_Comm comm)
 {
@@ -473,7 +461,7 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
         }
     }
 
-    printf("%d \t rank %d is the best with ts %f\n", myrank, best_rank, ts_min);
+    /* printf("%d \t rank %d is the best with ts %f\n", myrank, best_rank, ts_min); */
 
     /* Finalize epochs and critical sections */
     for (int i = 0; i < nqueues_remove; i++) {

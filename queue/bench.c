@@ -10,21 +10,45 @@
 #include <unistd.h>
 
 #include "relaxed_queue.h"
+#include "utils.h"
 
 enum {
-    NELEM = 100
+    NINSERT_WARMUP = 1000000,
+    NRANDOPER      = 500000,
 };
 
 int myrank = 0, nproc = 0;
 
 bool ISDBG = false;
 
+/* warm_up: Insert sufficient number of elements for warm up. */
+void warm_up(circbuf_t *circbuf, int ninsert_warmup_per_proc)
+{
+    for (int i = 0; i < ninsert_warmup_per_proc; i++) {
+        val_t val = (myrank + 1) * 10 + i;
+        circbuf_insert(val, circbuf);
+    }
+}
+
+/* test_randopers: Test with random operations (insert or remove)
+ * for the whole circbuf */
+void test_randopers(circbuf_t *circbuf, int nrandoper_per_proc)
+{
+    for (int i = 0; i < nrandoper_per_proc; i++) {
+        val_t val = 0;
+        if (get_rand(2) == 0) {
+            circbuf_insert(val, circbuf);
+        } else {
+            circbuf_remove(&val, circbuf);
+        }
+    }
+}
+
 /* test_insert_remove: Test insert and remove operations 
  * for the whole circbuf */
-void test_insert_remove(circbuf_t *circbuf, MPI_Comm comm)
+void test_insert_remove_debug(circbuf_t *circbuf, MPI_Comm comm)
 {
-    int i;
-    for (i = 0; i < 25; i++) {
+    for (int i = 0; i < 25; i++) {
         val_t val = (myrank + 1) * 10 + i;
         circbuf_insert(val, circbuf);
 
@@ -40,7 +64,7 @@ void test_insert_remove(circbuf_t *circbuf, MPI_Comm comm)
     MPI_Barrier(comm); /* DEBUG */
     usleep(1000);
 
-    for (i = 0; i < 25; i++) {
+    for (int i = 0; i < 25; i++) {
         printf("%d \t iter %d\n", myrank, i);
         val_t val = 0;
         circbuf_remove(&val, circbuf);
@@ -67,8 +91,7 @@ void test_insert_remove_proc(circbuf_t *circbuf, MPI_Comm comm)
     circbuf_print(circbuf, "before");
     elem_t elem;
 
-    int i;
-    for (i = 0; i < 11; i++) {
+    for (int i = 0; i < 11; i++) {
         elem.val = (myrank + 1) * 10 + i;
         circbuf_insert_proc(elem, circbuf, remote_rank);
         
@@ -77,7 +100,7 @@ void test_insert_remove_proc(circbuf_t *circbuf, MPI_Comm comm)
         circbuf_print(circbuf, "INSERT");
     }
 
-    for (i = 0; i < 11; i++) {
+    for (int i = 0; i < 11; i++) {
         circbuf_remove_proc(&elem, circbuf, remote_rank);
         
         MPI_Barrier(comm); /* DEBUG */
@@ -87,7 +110,7 @@ void test_insert_remove_proc(circbuf_t *circbuf, MPI_Comm comm)
         circbuf_print(circbuf, "REMOVE");
     }
 
-    for (i = 0; i < 5; i++) {
+    for (int i = 0; i < 5; i++) {
         elem.val = (myrank + 1) * 100 + i;
         circbuf_insert_proc(elem, circbuf, remote_rank);
         
@@ -105,30 +128,7 @@ int main(int argc, char *argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
     MPI_Comm_size(MPI_COMM_WORLD, &nproc);
 
-    /* char *env = getenv("MPICH_ASYNC_PROGRESS"); */
-    /* printf("%d \t env %s\n", myrank, env); */
-    /* MPI_Finalize(); */
-    /* return 0; */
-
     circbuf_t *circbuf;
-
-    // DEBUG
-    //
-    /* MPI_Barrier(MPI_COMM_WORLD); */
-    /* printf("%d \t wtime %f\n", myrank, MPI_Wtime()); */
-    /* MPI_Barrier(MPI_COMM_WORLD); */
-
-    /* double rtt = 0; */
-    /* double offset = mpigclock_sync_linear(MPI_COMM_WORLD, 0, &rtt); */
-    /* printf("%d \t rtt = %f clock = %f\n", myrank, rtt, offset); */
-
-    /* MPI_Barrier(MPI_COMM_WORLD); */
-    /* printf("%d \t wtime (after) %f\n", myrank, MPI_Wtime() + offset); */
-    /* MPI_Barrier(MPI_COMM_WORLD); */
-
-    /* MPI_Finalize(); */
-    /* return 1; */
-    // DEBUG
 
     int rc = circbuf_init(&circbuf, CIRCBUF_STARTSIZE, MPI_COMM_WORLD);
 
@@ -137,18 +137,32 @@ int main(int argc, char *argv[])
         goto error_lbl;
     }
 
+    int ninsert_warmup_per_proc = NINSERT_WARMUP / nproc;
+    int nrandoper_per_proc = NRANDOPER / nproc;
+
+    warm_up(circbuf, ninsert_warmup_per_proc);
+
     MPI_Barrier(MPI_COMM_WORLD);
+
+    double tbegin = MPI_Wtime();
 
     /* test_insert_remove_proc(circbuf, MPI_COMM_WORLD); */
-    test_insert_remove(circbuf, MPI_COMM_WORLD);
-
-    /* printf("%d \t before \t lock = %d\n", myrank, circbuf->lock.state); */
+    test_randopers(circbuf, nrandoper_per_proc);
+    /* test_insert_remove_debug(circbuf, MPI_COMM_WORLD); */
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-    /* circbuf_print(circbuf, "after"); */
+    double tend = MPI_Wtime();
 
-    /* printf("%d \t after all: \t lock = %d\n", myrank, circbuf->lock.state); */
+    if (myrank == 0) {
+        double telapsed = tend - tbegin;
+        double throughput = telapsed / NRANDOPER;
+
+        printf("Elapsed time: \t %lf\n", telapsed);
+        printf("Throughput: \t %lf\n", throughput);
+    }
+
+    /* circbuf_print(circbuf, "after"); */
 
     circbuf_free(circbuf);
 
