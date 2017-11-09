@@ -1,0 +1,9 @@
+#PBS -N n%NODES%p%PPN%
+#PBS -l nodes=%NODES%:ppn=%PPN%
+#PBS -j oe
+#PBS -o nodes%NODES%-ppn%PPN%.out
+
+cd $PBS_O_WORKDIR
+
+# export MPICH_ASYNC_PROGRESS=1
+mpiexec %EXEC%
