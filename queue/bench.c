@@ -13,8 +13,9 @@
 #include "utils.h"
 
 enum {
-    NINSERT_WARMUP = 1000000,
-    NRANDOPER      = 500000,
+    NINSERT_WARMUP = 100000,
+    NRANDOPER      = NINSERT_WARMUP / 2,
+    NRUNS          = 1
 };
 
 int myrank = 0, nproc = 0;
@@ -142,24 +143,34 @@ int main(int argc, char *argv[])
 
     warm_up(circbuf, ninsert_warmup_per_proc);
 
-    MPI_Barrier(MPI_COMM_WORLD);
+    double telapsed_sum = 0.0;
 
-    double tbegin = MPI_Wtime();
+    for (int i = 0; i < NRUNS; i++) {
+        MPI_Barrier(MPI_COMM_WORLD);
 
-    /* test_insert_remove_proc(circbuf, MPI_COMM_WORLD); */
-    test_randopers(circbuf, nrandoper_per_proc);
-    /* test_insert_remove_debug(circbuf, MPI_COMM_WORLD); */
+        double tbegin = MPI_Wtime();
 
-    MPI_Barrier(MPI_COMM_WORLD);
+        /* test_insert_remove_proc(circbuf, MPI_COMM_WORLD); */
+        test_randopers(circbuf, nrandoper_per_proc);
+        /* test_insert_remove_debug(circbuf, MPI_COMM_WORLD); */
 
-    double tend = MPI_Wtime();
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        double tend = MPI_Wtime();
+
+        if (myrank == 0) {
+            /* printf("Elapsed time (run %d): \t %lf\n", i, tend - tbegin); */
+            telapsed_sum += tend - tbegin;
+        }
+    }
 
     if (myrank == 0) {
-        double telapsed = tend - tbegin;
-        double throughput = telapsed / NRANDOPER;
+        double telapsed_avg = telapsed_sum / NRUNS;
+        double throughput_avg = NRANDOPER / telapsed_avg;
 
-        printf("Elapsed time: \t %lf\n", telapsed);
-        printf("Throughput: \t %lf\n", throughput);
+        printf("Numer of processes: \t %d\n", nproc);
+        printf("Elapsed time: \t %lf\n", telapsed_avg);
+        printf("Throughput: \t %lf\n", throughput_avg);
     }
 
     /* circbuf_print(circbuf, "after"); */
