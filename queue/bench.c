@@ -13,14 +13,14 @@
 #include "utils.h"
 
 enum {
-    NINSERT_WARMUP = 100000,
+    NINSERT_WARMUP = 150000,
     NRANDOPER      = NINSERT_WARMUP / 2,
-    NRUNS          = 1
+    NRUNS          = 5
 };
 
 int myrank = 0, nproc = 0;
 
-bool ISDBG = false;
+const bool ISDBG = false;
 
 /* warm_up: Insert sufficient number of elements for warm up. */
 void warm_up(circbuf_t *circbuf, int ninsert_warmup_per_proc)
@@ -168,9 +168,12 @@ int main(int argc, char *argv[])
         double telapsed_avg = telapsed_sum / NRUNS;
         double throughput_avg = NRANDOPER / telapsed_avg;
 
-        printf("Numer of processes: \t %d\n", nproc);
-        printf("Elapsed time: \t %lf\n", telapsed_avg);
-        printf("Throughput: \t %lf\n", throughput_avg);
+        printf("Numer of processes: \t\t %d\n", nproc);
+        printf("Numer of warm up operations: \t %d\n", NINSERT_WARMUP);
+        printf("Numer of random operations: \t %d\n", NRANDOPER);
+        printf("Numer of runs: \t\t %d\n", NRUNS);
+        printf("Elapsed time: \t\t %lf\n", telapsed_avg);
+        printf("Throughput: \t\t %lf\n", throughput_avg);
     }
 
     /* circbuf_print(circbuf, "after"); */

@@ -44,7 +44,7 @@ static void circbuf_info_init(void)
     circbuf_info.buf_offset = offsetof(circbuf_t, buf);
 }
 
-/* circbuf_free: Initialize array for displaceemnts of all procs. */
+/* disps_init: Initialize array for displaceemnts of all procs. */
 static int disps_init(circbuf_t *circbuf, int nproc)
 {
     MPI_Alloc_mem(sizeof(MPI_Aint) * nproc, MPI_INFO_NULL, &circbuf->basedisp);
@@ -125,18 +125,30 @@ int circbuf_init(circbuf_t **circbuf, int size, MPI_Comm comm)
     return CODE_SUCCESS;
 }
 
-/* begin_RMA_epoch: Begin passive RMA access epoch. */
-static void begin_RMA_epoch(MPI_Win win, int rank)
+/* begin_RMA_epoch_one: Begin passive RMA access epoch with specified proc. */
+static void begin_RMA_epoch_one(MPI_Win win, int rank)
 {
     /* MPI_Win_lock_all(0, win); */
     MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, win); 
 }
 
-/* end_RMA_epoch: Complete passive RMA access epoch. */
-static void end_RMA_epoch(MPI_Win win, int rank)
+/* begin_RMA_epoch_all: Begin passive RMA access epoch with all proc. */
+static void begin_RMA_epoch_all(MPI_Win win)
+{
+    MPI_Win_lock_all(0, win);
+}
+
+/* end_RMA_epoch_one: Complete passive RMA access epoch with specified proc. */
+static void end_RMA_epoch_one(MPI_Win win, int rank)
 {
     /* MPI_Win_unlock_all(win); */
     MPI_Win_unlock(rank, win);
+}
+
+/* end_RMA_epoch_all: Complete passive RMA access epoch with all proc. */
+static void end_RMA_epoch_all(MPI_Win win)
+{
+    MPI_Win_unlock_all(win);
 }
 
 /* mutex_lock: */
@@ -184,6 +196,7 @@ static void get_circbuf_state(MPI_Win win, MPI_Aint basedisp,
             MPI_Aint_add(basedisp, circbuf_info.state_offset),
             sizeof(circbuf_state_t), MPI_BYTE, win);
 
+    /* Flush, because we will use circbuf state in this epoch */
     MPI_Win_flush(rank, win);
 }
 
@@ -195,7 +208,7 @@ static void put_elem(MPI_Win win, MPI_Aint datadisp, int head,
             MPI_Aint_add(datadisp, sizeof(elem_t) * head),
             sizeof(elem_t), MPI_BYTE, win);
 
-    MPI_Win_flush(rank, win);
+    /* MPI_Win_flush(rank, win); */
 }
 
 /* get_elem: Get element from remote buffer */
@@ -206,6 +219,7 @@ static void get_elem(MPI_Win win, MPI_Aint datadisp, int tail,
             MPI_Aint_add(datadisp, sizeof(elem_t) * tail),
             sizeof(elem_t), MPI_BYTE, win);
 
+    /* Flush, because we will use elem in this epoch */
     MPI_Win_flush(rank, win);
 }
 
@@ -219,10 +233,10 @@ static void refresh_head(MPI_Win win, MPI_Aint basedisp, int *head, int size,
             MPI_Aint_add(basedisp, circbuf_info.head_offset),
             1, MPI_INT, win);
 
-    MPI_Win_flush(rank, win);
+    /* MPI_Win_flush(rank, win); */
 }
 
-/* refresh_head: Increment head pointer and put to remote circbuf. */
+/* refresh_tail: Increment tail pointer and put to remote circbuf. */
 static void refresh_tail(MPI_Win win, MPI_Aint basedisp, int *tail, int size, 
                          int rank)
 {
@@ -232,7 +246,7 @@ static void refresh_tail(MPI_Win win, MPI_Aint basedisp, int *tail, int size,
             MPI_Aint_add(basedisp, circbuf_info.tail_offset),
             1, MPI_INT, win);
 
-    MPI_Win_flush(rank, win);
+    /* MPI_Win_flush(rank, win); */
 }
 
 /* circbuf_insert: Insert an element to the tail of the circular buffer 
@@ -248,7 +262,7 @@ int circbuf_insert_proc(elem_t elem, circbuf_t *circbuf, int rank)
      * 6. Release lock. 
      */
 
-    begin_RMA_epoch(circbuf->win, rank);
+    begin_RMA_epoch_one(circbuf->win, rank);
 
     mutex_lock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
 
@@ -259,7 +273,7 @@ int circbuf_insert_proc(elem_t elem, circbuf_t *circbuf, int rank)
     if (isfull(state)) {
         error_msg("circbuf_insert_proc() failed: buffer is full", 0);
         mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
-        end_RMA_epoch(circbuf->win, rank);
+        end_RMA_epoch_one(circbuf->win, rank);
         return CODE_CIRCBUF_FULL;
     }
 
@@ -270,7 +284,7 @@ int circbuf_insert_proc(elem_t elem, circbuf_t *circbuf, int rank)
 
     mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
 
-    end_RMA_epoch(circbuf->win, rank);
+    end_RMA_epoch_one(circbuf->win, rank);
 
     return CODE_SUCCESS;
 }
@@ -288,7 +302,7 @@ int circbuf_remove_proc(elem_t *elem, circbuf_t *circbuf, int rank)
      * 6. Release lock. 
      */
 
-    begin_RMA_epoch(circbuf->win, rank);
+    begin_RMA_epoch_one(circbuf->win, rank);
 
     mutex_lock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
 
@@ -299,7 +313,7 @@ int circbuf_remove_proc(elem_t *elem, circbuf_t *circbuf, int rank)
     if (isempty(state)) {
         error_msg("circbuf_remove_proc() failed: circbuf is empty", 0);
         mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
-        end_RMA_epoch(circbuf->win, rank);
+        end_RMA_epoch_one(circbuf->win, rank);
         return CODE_CIRCBUF_EMPTY;
     }
 
@@ -310,7 +324,7 @@ int circbuf_remove_proc(elem_t *elem, circbuf_t *circbuf, int rank)
 
     mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
 
-    end_RMA_epoch(circbuf->win, rank);
+    end_RMA_epoch_one(circbuf->win, rank);
 
     return CODE_SUCCESS;
 }
@@ -327,8 +341,6 @@ static int circbuf_fetch_elem(elem_t *elem, circbuf_state_t *state,
      * 4. Get element from the buffer.
      */
 
-    begin_RMA_epoch(circbuf->win, rank);
-
     mutex_lock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
 
     get_circbuf_state(circbuf->win, circbuf->basedisp[rank], rank, state);
@@ -339,7 +351,6 @@ static int circbuf_fetch_elem(elem_t *elem, circbuf_state_t *state,
     if (isempty(*state)) {
         error_msg("circbuf_get_elem() failed: circbuf is empty", 0);
         mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
-        end_RMA_epoch(circbuf->win, rank);
         return CODE_CIRCBUF_EMPTY;
     }
 
@@ -365,8 +376,6 @@ static void circbuf_get_elem_finalize(circbuf_state_t state,
     }
 
     mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
-
-    end_RMA_epoch(circbuf->win, rank);
 }
 
 /* get_timestamp: Get current timestamp */
@@ -419,6 +428,8 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
     int avail_queues = circbuf->nproc;
     int i = 0;
 
+    begin_RMA_epoch_all(circbuf->win);
+
     /* Random choose queues and get the candidate elements */
     while (i < nqueues_remove) {
         int rank = 0;
@@ -426,6 +437,8 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
         do {
             rank = get_rand(circbuf->nproc);
         } while (isfound(rank, ranks, i));
+
+        /* begin_RMA_epoch_one(circbuf->win, rank); */
         
         int rc = circbuf_fetch_elem(&elem_cand[i], &states[i], circbuf, rank);
 
@@ -435,11 +448,14 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
                 nqueues_remove = avail_queues;
                 
                 if (nqueues_remove == 0) {
+                    /* end_RMA_epoch_one(circbuf->win, rank); */
+                    end_RMA_epoch_all(circbuf->win);
                     error_msg("circbuf_remove() failed: circbuf is empty", 0);
                     return CODE_CIRCBUF_EMPTY;
                 }
             }
         } else {
+            /* end_RMA_epoch_one(circbuf->win, rank); */
             ranks[i] = rank;
             i++;
         }
@@ -469,7 +485,10 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
         /* printf("rank %d remove_flag = %d bool %d\n", ranks[i], remove_flag, */
         /*         ranks[i] == best_rank); */
         circbuf_get_elem_finalize(states[i], circbuf, ranks[i], remove_flag);
+        /* end_RMA_epoch_one(circbuf->win, ranks[i]); */
     }
+
+    end_RMA_epoch_all(circbuf->win);
 
     return CODE_SUCCESS;
 }
@@ -480,6 +499,7 @@ void circbuf_free(circbuf_t *circbuf)
 {
     /* free(circbuf->buf); */
     /* free(circbuf); */
+    MPI_Barrier(circbuf->comm);
 
     MPI_Free_mem(circbuf->buf);
     MPI_Free_mem(circbuf);
