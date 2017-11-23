@@ -11,14 +11,23 @@
 #include "common.h"
 
 enum {
-    CIRCBUF_STARTSIZE  = 1000000,     /* Initial size of circbuf */
+    CIRCBUF_STARTSIZE     = 1000000,     /* Initial size of circbuf */
+    // CIRCBUF_STARTSIZE     = 40,     /* Initial size of circbuf */
     /* Number of queues from which we get the elements during remove operation,
      * compare it and choose the best */
-    NQUEUES_REMOVE     = 2,
-    CODE_SUCCESS       = 0,
-    CODE_ERROR         = 1,
-    CODE_CIRCBUF_FULL  = 2,
-    CODE_CIRCBUF_EMPTY = 3
+    NQUEUES_REMOVE        = 2,
+
+    CODE_SUCCESS          = 0,
+    CODE_ERROR            = 1,
+    CODE_CIRCBUF_FULL     = 2,
+    CODE_CIRCBUF_EMPTY    = 3,
+    CODE_CIRCBUF_BUSY     = 4,
+
+    CODE_TRYLOCK_SUCCESS  = 0,
+    CODE_TRYLOCK_BUSY     = 1,
+
+    LOCK_UNLOCKED         = 0,
+    LOCK_LOCKED           = 1
 };
 
 typedef int val_t;

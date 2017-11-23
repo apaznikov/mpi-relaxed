@@ -7,20 +7,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <assert.h>
 #include <unistd.h>
 
 #include "relaxed_queue.h"
 #include "utils.h"
 
 enum {
-    NINSERT_WARMUP = 150000,
-    NRANDOPER      = NINSERT_WARMUP / 2,
-    NRUNS          = 5
+    /* NINSERT_WARMUP = 150000, */
+    NINSERT_WARMUP = 1000,
+    /* NRANDOPER      = NINSERT_WARMUP / 2, */
+    NRANDOPER      = 500,
+    /* NRANDOPER      = 0, */
+    NRUNS          = 1
 };
 
 int myrank = 0, nproc = 0;
 
-const bool ISDBG = false;
+bool ISDBG = false;
 
 /* warm_up: Insert sufficient number of elements for warm up. */
 void warm_up(circbuf_t *circbuf, int ninsert_warmup_per_proc)
@@ -137,9 +141,18 @@ int main(int argc, char *argv[])
         error_msg("init_circbuf() failed", 0);
         goto error_lbl;
     }
+    
+    /* test_insert_remove_debug(circbuf, MPI_COMM_WORLD); */
+    /* MPI_Finalize(); */
+    /* return 0; */
 
     int ninsert_warmup_per_proc = NINSERT_WARMUP / nproc;
+    assert(ninsert_warmup_per_proc > 1);
+
     int nrandoper_per_proc = NRANDOPER / nproc;
+    assert(nrandoper_per_proc > 1);
+
+    MPI_Barrier(MPI_COMM_WORLD);
 
     warm_up(circbuf, ninsert_warmup_per_proc);
 

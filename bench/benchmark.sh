@@ -9,7 +9,7 @@ BENCHNAME=../queue/bench
 TASKJOB_TMPL=../queue/task.job.tmpl
 EXEC="\.\.\/\.\.\/queue\/bench"
 
-NNODES=4
+NNODES=7
 PPN=8
 
 function measure_throughput
