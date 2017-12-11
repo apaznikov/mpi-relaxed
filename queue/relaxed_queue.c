@@ -45,10 +45,14 @@ static void circbuf_info_init(void)
 }
 
 /* disps_init: Initialize array for displaceemnts of all procs. */
-static int disps_init(circbuf_t *circbuf, int nproc)
+static int disps_init(circbuf_t *circbuf)
 {
-    MPI_Alloc_mem(sizeof(MPI_Aint) * nproc, MPI_INFO_NULL, &circbuf->basedisp);
-    MPI_Alloc_mem(sizeof(MPI_Aint) * nproc, MPI_INFO_NULL, &circbuf->datadisp);
+    MPI_Alloc_mem(sizeof(MPI_Aint) * circbuf->nproc, 
+                  MPI_INFO_NULL, &circbuf->basedisp);
+    MPI_Alloc_mem(sizeof(MPI_Aint) * circbuf->nproc, 
+                  MPI_INFO_NULL, &circbuf->datadisp);
+    MPI_Alloc_mem(sizeof(MPI_Aint) * circbuf->nproc, 
+                  MPI_INFO_NULL, &circbuf->lockdisp);
 
     if ((circbuf->basedisp == NULL) || (circbuf->datadisp == NULL)) {
         error_msg("malloc() failed for circbuf->buf", errno);
@@ -60,6 +64,11 @@ static int disps_init(circbuf_t *circbuf, int nproc)
 
     MPI_Allgather(&circbuf->datadisp_local, 1, MPI_AINT,
                   circbuf->datadisp, 1, MPI_AINT, circbuf->comm);
+
+    for (int rank = 0; rank < circbuf->nproc; rank++) {
+        circbuf->lockdisp[rank] = MPI_Aint_add(circbuf->basedisp[rank],
+                                               circbuf_info.lock_state_offset);
+    }
 
     return CODE_SUCCESS;
 }
@@ -107,7 +116,7 @@ int circbuf_init(circbuf_t **circbuf, int size, MPI_Comm comm)
     MPI_Win_attach((*circbuf)->win, *circbuf, sizeof(circbuf_t));
     MPI_Win_attach((*circbuf)->win, (*circbuf)->buf, size_bytes);
 
-    int rc = disps_init(*circbuf, (*circbuf)->nproc);
+    int rc = disps_init(*circbuf);
 
     if (rc != CODE_SUCCESS) {
         error_msg("disps_init() failed", 0);
@@ -127,7 +136,9 @@ int circbuf_init(circbuf_t **circbuf, int size, MPI_Comm comm)
         (*circbuf)->nqueues_remove = 1;
     }
 
-    printf("nqueues = %d\n", (*circbuf)->nqueues_remove);
+    /* printf("nqueues = %d\n", (*circbuf)->nqueues_remove); */
+
+    (*circbuf)->max_attempts = (*circbuf)->nproc;
 
     return CODE_SUCCESS;
 }
@@ -186,7 +197,8 @@ static void mutex_lock(lock_t *lock, MPI_Win win, MPI_Aint basedisp, int rank)
 }
 
 /* mutex_trylock: */ 
-static int mutex_trylock(lock_t *lock, MPI_Win win, MPI_Aint basedisp, int rank) {
+static int mutex_trylock(lock_t *lock, MPI_Win win, MPI_Aint basedisp, int rank) 
+{
     MPI_Compare_and_swap(&lock->locked, &lock->unlocked, 
                          &lock->result, MPI_INT, rank,
                          MPI_Aint_add(basedisp, circbuf_info.lock_state_offset),
@@ -441,7 +453,7 @@ static int circbuf_tryfetch_elem(elem_t *elem, circbuf_state_t *state,
      */
 
     int rc = mutex_trylock(&circbuf->lock, circbuf->win, 
-                        circbuf->basedisp[rank], rank);
+                           circbuf->basedisp[rank], rank);
 
     if (rc == CODE_TRYLOCK_SUCCESS) {
         get_circbuf_state(circbuf->win, circbuf->basedisp[rank], rank, state);
@@ -451,11 +463,13 @@ static int circbuf_tryfetch_elem(elem_t *elem, circbuf_state_t *state,
 
         if (isempty(*state)) {
             error_msg("circbuf_get_elem() failed: circbuf is empty", 0);
-            mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
+            mutex_unlock(&circbuf->lock, circbuf->win, 
+                         circbuf->basedisp[rank], rank);
             return CODE_CIRCBUF_EMPTY;
         }
 
-        get_elem(circbuf->win, circbuf->datadisp[rank], state->tail, rank, elem);
+        get_elem(circbuf->win, circbuf->datadisp[rank], state->tail, 
+                 rank, elem);
 
         return CODE_SUCCESS;
     } else {
@@ -544,7 +558,11 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
     int avail_queues = circbuf->nproc;
     int curr_nqueues = 0;
 
+    /* Number of attempts to lock the mutex */
+    int nattempts = 0;
+
     begin_RMA_epoch_all(circbuf->win);
+
 
     /* Random choose queues and get the candidate elements */
     while (curr_nqueues < nqueues_remove) {
@@ -563,12 +581,34 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
             /* end_RMA_epoch_one(circbuf->win, rank); */
             ranks[curr_nqueues] = rank;
             curr_nqueues++;
+            nattempts = 0;
         } else if (rc == CODE_CIRCBUF_BUSY) {
             /* If lock is busy, try another process */
-            printf("%d \t BUSY\n", myrank);
+            /* printf("%d \t BUSY %d\n", myrank, rank); */
+
+            /* Count number of attempts to lock the mutex
+             * to avoid deadlock (only for 2nd and following
+             * queues */
+            if (curr_nqueues > 0) {
+                nattempts++;
+
+                /* If number of attempts is too large,
+                 * we suppose it's a deadlock and unlock
+                 * all locked queues 
+                 * FIXME not all locked queues but some of them? */
+                if (nattempts > circbuf->max_attempts) {
+                    /* printf("%d \t DEADLOCK?\n", myrank); */
+                    for (int i = 0; i < curr_nqueues; i++) {
+                        mutex_unlock(&circbuf->lock, circbuf->win, 
+                                     circbuf->basedisp[ranks[i]], ranks[i]);
+                    }
+                    curr_nqueues = 0;
+                }
+            }
+
             continue;
         } else if (rc == CODE_CIRCBUF_EMPTY) {
-            printf("%d \t EMPTY rank %d\n", myrank, rank);
+            /* printf("%d \t EMPTY rank %d\n", myrank, rank); */
 
             avail_queues--;
             if (avail_queues < nqueues_remove) {
@@ -628,6 +668,7 @@ void circbuf_free(circbuf_t *circbuf)
     MPI_Free_mem(circbuf);
     MPI_Free_mem(circbuf->basedisp);
     MPI_Free_mem(circbuf->datadisp);
+    MPI_Free_mem(circbuf->lockdisp);
 }
 
 /* circbuf_print: Print circbuf (useful for debug) */

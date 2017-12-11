@@ -56,6 +56,8 @@ typedef struct {
 typedef struct {
     MPI_Aint basedisp_local;    /* Base address of circbuf (local) */
     MPI_Aint *basedisp;         /* Base address of circbuf (all processes) */
+    MPI_Aint *lockdisp;         /* Displacements for lock state 
+                                   (all processes) */
     elem_t *buf;                /* Physical buffer */
     MPI_Aint datadisp_local;    /* Address of buf (data) (local) */
     MPI_Aint *datadisp;         /* Address of buf (data) (all processes) */
@@ -66,6 +68,7 @@ typedef struct {
     int nproc;                  /* Number of processes in communicator */
     double ts_offset;           /* Timestamp offset from 0 process */
     int nqueues_remove;         /* Number of queues for remove candidiates */
+    int max_attempts;           /* Max number of attempts to lock the mutex */
 } circbuf_t;
 
 /* Process-oblivious circular buffer info */

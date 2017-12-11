@@ -63,6 +63,6 @@ Module.symvers
 stdout
 queue/relaxed_queue
 queue/bench
-bench/results
-bench/graphs
-bench/jobfiles
+bench/results*
+bench/graphs*
+bench/jobfiles*
