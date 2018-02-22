@@ -66,3 +66,5 @@ queue/bench
 bench/results*
 bench/graphs*
 bench/jobfiles*
+mpich_llist/results*
+mpich_llist/bin
