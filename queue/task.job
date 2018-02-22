@@ -1,5 +1,5 @@
 #PBS -N mpitask
-#PBS -l nodes=2:ppn=2
+#PBS -l nodes=2:ppn=1
 #PBS -j oe
 #PBS -o stdout
 

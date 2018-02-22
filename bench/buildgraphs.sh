@@ -17,4 +17,14 @@ function process_output
     done
 }
 
+function build
+{
+    name="$1"
+
+    gp=graphs/${name}.gp
+    cat tmpl.gp | sed "s/%%NAME%%/$name/g" >$gp
+    gnuplot $gp
+}
+
 process_output
+build throughput

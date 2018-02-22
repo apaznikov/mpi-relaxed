@@ -9,7 +9,7 @@ BENCHNAME=../queue/bench
 TASKJOB_TMPL=../queue/task.job.tmpl
 EXEC="\.\.\/\.\.\/queue\/bench"
 
-NNODES=7
+NNODES=18
 PPN=8
 
 function measure_throughput
@@ -38,7 +38,7 @@ function measure_avg
 function prepare_dirs
 {
     # [ ! -d "results" ] && mkdir results
-    rm -r jobfiles 
+    [ -d "jobfiles" ] && rm -r jobfiles 
     mkdir jobfiles
 }
 

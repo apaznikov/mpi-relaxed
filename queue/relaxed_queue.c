@@ -170,7 +170,7 @@ static void end_RMA_epoch_all(MPI_Win win)
 }
 
 /* mutex_lock: */
-static void mutex_lock(lock_t *lock, MPI_Win win, MPI_Aint basedisp, int rank)
+static void mutex_lock(lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
 {
     do {
         /* static int ii = 0; */
@@ -181,8 +181,9 @@ static void mutex_lock(lock_t *lock, MPI_Win win, MPI_Aint basedisp, int rank)
 
         MPI_Compare_and_swap(&lock->locked, &lock->unlocked, 
                              &lock->result, MPI_INT, rank,
-                             MPI_Aint_add(basedisp, 
-                                          circbuf_info.lock_state_offset),
+                             lockdisp,
+                             /* MPI_Aint_add(basedisp,  */
+                             /*              circbuf_info.lock_state_offset), */
                              win);
 
         MPI_Win_flush(rank, win);
@@ -197,11 +198,12 @@ static void mutex_lock(lock_t *lock, MPI_Win win, MPI_Aint basedisp, int rank)
 }
 
 /* mutex_trylock: */ 
-static int mutex_trylock(lock_t *lock, MPI_Win win, MPI_Aint basedisp, int rank) 
+static int mutex_trylock(lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank) 
 {
     MPI_Compare_and_swap(&lock->locked, &lock->unlocked, 
                          &lock->result, MPI_INT, rank,
-                         MPI_Aint_add(basedisp, circbuf_info.lock_state_offset),
+                         lockdisp,
+                         /* MPI_Aint_add(basedisp, circbuf_info.lock_state_offset), */
                          win);
 
     MPI_Win_flush(rank, win);
@@ -219,7 +221,7 @@ static int mutex_trylock(lock_t *lock, MPI_Win win, MPI_Aint basedisp, int rank)
 }
 
 /* mutex_unlock: */
-static void mutex_unlock(lock_t *lock, MPI_Win win, MPI_Aint basedisp, int rank)
+static void mutex_unlock(lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
 {
     /* MPI_Compare_and_swap(&lock->unlocked, &lock->locked,  */
     /*                      &lock->result, MPI_INT, rank, */
@@ -231,7 +233,8 @@ static void mutex_unlock(lock_t *lock, MPI_Win win, MPI_Aint basedisp, int rank)
 
     MPI_Accumulate(&lock->unlocked, 
                    1, MPI_INT, rank,
-                   MPI_Aint_add(basedisp, circbuf_info.lock_state_offset),
+                   /* MPI_Aint_add(basedisp, circbuf_info.lock_state_offset), */
+                   lockdisp,
                    1, MPI_INT, MPI_REPLACE, win);
 
     /* MPI_Win_flush(rank, win);       #<{(| DEBUG |)}># */
@@ -329,7 +332,7 @@ int circbuf_insert_proc(elem_t elem, circbuf_t *circbuf, int rank)
 
     begin_RMA_epoch_one(circbuf->win, rank);
 
-    mutex_lock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
+    mutex_lock(&circbuf->lock, circbuf->win, circbuf->lockdisp[rank], rank);
 
     circbuf_state_t state;
 
@@ -337,7 +340,7 @@ int circbuf_insert_proc(elem_t elem, circbuf_t *circbuf, int rank)
 
     if (isfull(state)) {
         error_msg("circbuf_insert_proc() failed: buffer is full", 0);
-        mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
+        mutex_unlock(&circbuf->lock, circbuf->win, circbuf->lockdisp[rank], rank);
         end_RMA_epoch_one(circbuf->win, rank);
         return CODE_CIRCBUF_FULL;
     }
@@ -347,7 +350,7 @@ int circbuf_insert_proc(elem_t elem, circbuf_t *circbuf, int rank)
     refresh_head(circbuf->win, circbuf->basedisp[rank], 
                  &state.head, state.size, rank);
 
-    mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
+    mutex_unlock(&circbuf->lock, circbuf->win, circbuf->lockdisp[rank], rank);
 
     end_RMA_epoch_one(circbuf->win, rank);
 
@@ -369,7 +372,7 @@ int circbuf_tryinsert_proc(elem_t elem, circbuf_t *circbuf, int rank)
     begin_RMA_epoch_one(circbuf->win, rank);
 
     int rc = mutex_trylock(&circbuf->lock, circbuf->win, 
-                           circbuf->basedisp[rank], rank);
+                           circbuf->lockdisp[rank], rank);
 
     if (rc == CODE_TRYLOCK_SUCCESS) {
         circbuf_state_t state;
@@ -378,7 +381,7 @@ int circbuf_tryinsert_proc(elem_t elem, circbuf_t *circbuf, int rank)
 
         if (isfull(state)) {
             error_msg("circbuf_insert_proc() failed: buffer is full", 0);
-            mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
+            mutex_unlock(&circbuf->lock, circbuf->win, circbuf->lockdisp[rank], rank);
             end_RMA_epoch_one(circbuf->win, rank);
             return CODE_CIRCBUF_FULL;
         }
@@ -388,7 +391,7 @@ int circbuf_tryinsert_proc(elem_t elem, circbuf_t *circbuf, int rank)
         refresh_head(circbuf->win, circbuf->basedisp[rank], 
                      &state.head, state.size, rank);
 
-        mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
+        mutex_unlock(&circbuf->lock, circbuf->win, circbuf->lockdisp[rank], rank);
     }
 
     end_RMA_epoch_one(circbuf->win, rank);
@@ -414,7 +417,7 @@ int circbuf_remove_proc(elem_t *elem, circbuf_t *circbuf, int rank)
 
     begin_RMA_epoch_one(circbuf->win, rank);
 
-    mutex_lock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
+    mutex_lock(&circbuf->lock, circbuf->win, circbuf->lockdisp[rank], rank);
 
     circbuf_state_t state;
 
@@ -422,7 +425,7 @@ int circbuf_remove_proc(elem_t *elem, circbuf_t *circbuf, int rank)
 
     if (isempty(state)) {
         error_msg("circbuf_remove_proc() failed: circbuf is empty", 0);
-        mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
+        mutex_unlock(&circbuf->lock, circbuf->win,circbuf->lockdisp[rank],rank);
         end_RMA_epoch_one(circbuf->win, rank);
         return CODE_CIRCBUF_EMPTY;
     }
@@ -432,7 +435,7 @@ int circbuf_remove_proc(elem_t *elem, circbuf_t *circbuf, int rank)
     refresh_tail(circbuf->win, circbuf->basedisp[rank], 
                  &state.tail, state.size, rank);
 
-    mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
+    mutex_unlock(&circbuf->lock, circbuf->win, circbuf->lockdisp[rank], rank);
 
     end_RMA_epoch_one(circbuf->win, rank);
 
@@ -453,7 +456,7 @@ static int circbuf_tryfetch_elem(elem_t *elem, circbuf_state_t *state,
      */
 
     int rc = mutex_trylock(&circbuf->lock, circbuf->win, 
-                           circbuf->basedisp[rank], rank);
+                           circbuf->lockdisp[rank], rank);
 
     if (rc == CODE_TRYLOCK_SUCCESS) {
         get_circbuf_state(circbuf->win, circbuf->basedisp[rank], rank, state);
@@ -464,7 +467,7 @@ static int circbuf_tryfetch_elem(elem_t *elem, circbuf_state_t *state,
         if (isempty(*state)) {
             error_msg("circbuf_get_elem() failed: circbuf is empty", 0);
             mutex_unlock(&circbuf->lock, circbuf->win, 
-                         circbuf->basedisp[rank], rank);
+                         circbuf->lockdisp[rank], rank);
             return CODE_CIRCBUF_EMPTY;
         }
 
@@ -494,7 +497,7 @@ static void circbuf_get_elem_finalize(circbuf_state_t state,
                      &state.tail, state.size, rank);
     }
 
-    mutex_unlock(&circbuf->lock, circbuf->win, circbuf->basedisp[rank], rank);
+    mutex_unlock(&circbuf->lock, circbuf->win, circbuf->lockdisp[rank], rank);
 }
 
 /* get_timestamp: Get current timestamp */
@@ -600,7 +603,7 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
                     /* printf("%d \t DEADLOCK?\n", myrank); */
                     for (int i = 0; i < curr_nqueues; i++) {
                         mutex_unlock(&circbuf->lock, circbuf->win, 
-                                     circbuf->basedisp[ranks[i]], ranks[i]);
+                                     circbuf->lockdisp[ranks[i]], ranks[i]);
                     }
                     curr_nqueues = 0;
                 }
