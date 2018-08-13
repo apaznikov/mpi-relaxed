@@ -67,7 +67,7 @@ function prepare_jobfiles
         cat $TASKJOB_TMPL | sed s/%NODES%/$nnodes/g \
                           | sed s/%PPN%/$PPN/g \
                           | sed s/%EXEC%/$EXEC/g \
-                          >jobfiles/nodes$nnodes-ppn$ppn-run$run.job
+                          >jobfiles/nodes$nnodes-ppn$PPN.job
     done
 }
 

@@ -10,7 +10,7 @@
 #include <string.h>
 #include "mpitestconf.h"
 
-#define NUM_ELEMS 100000
+#define NUM_ELEMS 10000
 
 /*
  * Init and finalize test

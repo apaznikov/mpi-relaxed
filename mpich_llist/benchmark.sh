@@ -1,7 +1,8 @@
-NRUNS=2
+NRUNS=1
 # NUM_ELEMS=1500
-NUM_ELEMS=100000
-NNODES=10
+NUM_ELEMS=10000
+NNODES_FROM=7
+NNODES_TO=11
 PPN=8
 
 # BENCH_LIST="linked_list_bench_lock_all \
@@ -33,7 +34,7 @@ function compile
 function prepare_jobs
 {
     for bench in $BENCH_LIST; do
-        for ((nnodes = 1; nnodes <= NNODES; nnodes++)); do
+        for ((nnodes = NNODES_FROM; nnodes <= NNODES_TO; nnodes++)); do
             nproc=`echo $nnodes $PPN | awk '{ print $1 * $2 }'`
             name="bin/${bench}-nodes${nnodes}-ppn${PPN}"
 

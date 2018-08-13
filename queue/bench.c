@@ -14,12 +14,12 @@
 #include "utils.h"
 
 enum {
-    NINSERT_WARMUP = 150000,
+    NINSERT_WARMUP = 200000,
     /* NINSERT_WARMUP = 1000, */
     NRANDOPER      = NINSERT_WARMUP / 2,
     /* NRANDOPER      = 500, */
     /* NRANDOPER      = 0, */
-    NRUNS          = 3
+    NRUNS          = 50
 };
 
 int myrank = 0, nproc = 0;

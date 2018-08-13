@@ -46,7 +46,7 @@ typedef struct {
 static const llist_ptr_t nil = { -1, (MPI_Aint) MPI_BOTTOM };
 
 static const int verbose = 0;
-static const int print_perf = 0;
+static const int print_perf = 1;
 
 /* List of locally allocated list elements. */
 static llist_elem_t **my_elems = NULL;
@@ -186,6 +186,7 @@ int main(int argc, char **argv)
     MPI_Barrier(MPI_COMM_WORLD);
     time = MPI_Wtime() - time;
 
+#ifdef _VERIFY
     /* Traverse the list and verify that all processes inserted exactly the correct
      * number of elements. */
     if (procid == 0) {
@@ -248,6 +249,7 @@ int main(int argc, char **argv)
         printf("%s\n", errors == 0 ? " No Errors" : "FAIL");
         free(counts);
     }
+#endif
 
     if (print_perf) {
         double max_time;
@@ -262,9 +264,11 @@ int main(int argc, char **argv)
 
     MPI_Win_free(&llist_win);
 
+#ifdef _FREE
     /* Free all the elements in the list */
     for (; my_elems_count > 0; my_elems_count--)
         MPI_Free_mem(my_elems[my_elems_count - 1]);
+#endif
 
     MPI_Finalize();
     return 0;

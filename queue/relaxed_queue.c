@@ -148,6 +148,8 @@ static void begin_RMA_epoch_one(MPI_Win win, int rank)
 {
     /* MPI_Win_lock_all(0, win); */
     MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, win); 
+    /* EXCLUSIVE better */
+    /* MPI_Win_lock(MPI_LOCK_EXCLUSIVE, rank, 0, win);  */
 }
 
 /* begin_RMA_epoch_all: Begin passive RMA access epoch with all proc. */
@@ -565,7 +567,6 @@ int circbuf_remove(val_t *val, circbuf_t *circbuf)
     int nattempts = 0;
 
     begin_RMA_epoch_all(circbuf->win);
-
 
     /* Random choose queues and get the candidate elements */
     while (curr_nqueues < nqueues_remove) {

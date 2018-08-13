@@ -2,6 +2,7 @@
 #PBS -l nodes=%NODES%:ppn=%PPN%
 #PBS -j oe
 #PBS -o nodes%NODES%-ppn%PPN%.out
+#PBS -q release
 
 cd $PBS_O_WORKDIR
 
