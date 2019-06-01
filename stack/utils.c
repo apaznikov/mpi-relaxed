@@ -1,3 +1,11 @@
+/*
+ * utils.c: Relaxed distributed stack implementation on MPI
+ * 
+ * (C) 2017 Alexey Paznikov <apaznikov@gmail.com>
+ * (C) 2019 Aleksandr Polozhenskii <polozhenskii@gmail.com>
+ *
+ */
+
 #include <mpi.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,7 +17,6 @@
 extern int myrank, nproc;
 
 /* init_random_generator: Initialize random generator. */
-// Генерация последовательности псевдослучайных чисел, которые будут возвращаться ф-цией random()
 void init_random_generator(void)
 {
     /* 10 because it's empirically better for two procs:

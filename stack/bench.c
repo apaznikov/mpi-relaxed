@@ -1,3 +1,11 @@
+/*
+ * bench.c: Relaxed distributed stack implementation on MPI
+ * 
+ * (C) 2017 Alexey Paznikov <apaznikov@gmail.com>
+ * (C) 2019 Aleksandr Polozhenskii <polozhenskii@gmail.com>
+ *
+ */
+
 #include <stdio.h>
 #include <assert.h>
 #include <unistd.h>
@@ -9,14 +17,15 @@
 #include "mpigclock.h"
 
 enum {
-    NPUSH_WARMUP = 10,
+    NPUSH_WARMUP = 200000,
+    // NPUSH_WARMUP = 600,
+    // NRANDOPER      = NPUSH_WARMUP / 3,
     NRANDOPER      = NPUSH_WARMUP / 2,
-    NRUNS          = 1
+    // NRUNS = 1
+    NRUNS          = 50
 };
 
 int myrank = 0, nproc = 0;
-
-double time = 0;
 
 bool ISDBG = false;
 
@@ -57,7 +66,7 @@ void test_randopers(Buf_t *buf, int nrandoper_per_proc)
 }
 
 // test_randopers_proc: Test with random operations (push or pop)
-// for the specified process.
+// for the specified process (not distributed buffer).
 void test_randopers_proc(Buf_t *buf, int nrandoper_per_proc)
 {
     if (myrank != 0) {
@@ -76,7 +85,7 @@ void test_randopers_proc(Buf_t *buf, int nrandoper_per_proc)
 }
 
 // test_push_pop_debug: Test push and pop operations
-// for the whole buffer
+// for the whole buffer.
 void test_push_pop_debug(Buf_t *buf, MPI_Comm comm)
 {
     int rc;
@@ -98,7 +107,7 @@ void test_push_pop_debug(Buf_t *buf, MPI_Comm comm)
     usleep(1000);
 
     for (int i = 0; i < 3; i++) {
-        //printf("%d \t iter %d\n", myrank, i);
+        // printf("%d \t iter %d\n", myrank, i);
         Val_t val = 0;
         buf_pop(&val, buf);
     }
@@ -111,7 +120,7 @@ void test_push_pop_debug(Buf_t *buf, MPI_Comm comm)
 }
 
 // test_push_pop_proc: Test push and pop operations for specific
-// processes (not distributed buffer)
+// processes (not distributed buffer).
 void test_push_pop_proc(Buf_t *buf, MPI_Comm comm)
 {
     int remote_rank = 0;
@@ -123,15 +132,15 @@ void test_push_pop_proc(Buf_t *buf, MPI_Comm comm)
         buf_push_proc(elem, buf, remote_rank);
 
         MPI_Barrier(comm);
-        //buf_print(buf, "PUSH");
+        // buf_print(buf, "PUSH");
     }
 
     for (int i = 0; i < 25; i++) {
         buf_pop_proc(&elem, buf, remote_rank);
 
         MPI_Barrier(comm);
-        //printf("%d \t elem = %d\n", myrank, elem.val);
-        //buf_print(buf, "POP");
+        // printf("%d \t elem = %d\n", myrank, elem.val);
+        // buf_print(buf, "POP");
     }
 }
 
@@ -140,8 +149,6 @@ int main(int argc, char *argv[])
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
     MPI_Comm_size(MPI_COMM_WORLD, &nproc);
-
-    time = MPI_Wtime(); // *** DEBUG ***
 
     Buf_t *buf;
 
@@ -165,9 +172,9 @@ int main(int argc, char *argv[])
     warm_up(buf, npush_warm_up_per_proc);
 
     // Not relaxed stack warmup
-    //warm_up_proc(buf, npush_warm_up_per_proc);
+    // warm_up_proc(buf, npush_warm_up_per_proc);
 
-    //buf_print(buf, "before");
+    // buf_print(buf, "before");
 
     double telapsed_sum = 0.0;
 
@@ -176,14 +183,17 @@ int main(int argc, char *argv[])
 
         double tbegin = MPI_Wtime();
 
-        // Test not relaxed stack
-        //test_push_pop_proc(buf, MPI_COMM_WORLD);
+        // Test not relaxed stack with push & pop operations
+        // test_push_pop_proc(buf, MPI_COMM_WORLD);
         
-        // Test relaxed stack
-        //test_push_pop_debug(buf, MPI_COMM_WORLD);
+        // Test not relaxed stack with push & pop operations with debug
+        // test_push_pop_debug(buf, MPI_COMM_WORLD);
 
+        // Test relaxed stack on random operations
         test_randopers(buf, nrandoper_per_proc);
-        //test_randopers_proc(buf, nrandoper_per_proc);
+
+        // Test not relaxed stack with random operations
+        // test_randopers_proc(buf, nrandoper_per_proc);
 
         MPI_Barrier(MPI_COMM_WORLD);
 
@@ -207,7 +217,7 @@ int main(int argc, char *argv[])
         printf("Throughput: \t\t %lf\n", throughput_avg);
     }
 
-    //buf_print(buf, "after");
+    // buf_print(buf, "after");
 
     buf_free(buf);
     

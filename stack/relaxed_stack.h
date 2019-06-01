@@ -1,14 +1,18 @@
 /*
  * relaxed_stack.h: Relaxed distributed stack implementation on MPI
+ * 
+ * (C) 2017 Alexey Paznikov <apaznikov@gmail.com>
+ * (C) 2019 Aleksandr Polozhenskii <polozhenskii@gmail.com>
+ *
  */
 
 #pragma once
 
 #include <mpi.h>
 
-
 enum {
-    BUFFER_STARTSIZE      = 20,
+    BUFFER_STARTSIZE      = 1000000,
+    // BUFFER_STARTSIZE      = 1000,
     NSTACKS_REMOVE        = 2,
 
     CODE_SUCCESS          = 0,
@@ -21,7 +25,9 @@ enum {
     CODE_TRYLOCK_BUSY     = 1,
 
     LOCK_UNLOCKED         = 0,
-    LOCK_LOCKED           = 1     
+    LOCK_LOCKED           = 1,
+    MIN_DELAY             = 10,
+    MAX_DELAY             = 1000     
 };
 
 typedef int Val_t;

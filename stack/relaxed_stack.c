@@ -1,3 +1,11 @@
+/*
+ * relaxed_stack.c: Relaxed distributed stack implementation on MPI
+ * 
+ * (C) 2017 Alexey Paznikov <apaznikov@gmail.com>
+ * (C) 2019 Aleksandr Polozhenskii <polozhenskii@gmail.com>
+ *
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -60,8 +68,6 @@ static int disps_init(Buf_t *buf)
 
     return CODE_SUCCESS;
 }
-
-
 
 // buf_init: Init buffer with specified size.
 int buf_init(Buf_t **buf, int size, MPI_Comm comm)
@@ -133,8 +139,8 @@ int buf_init(Buf_t **buf, int size, MPI_Comm comm)
 // begin_RMA_epoch_one: Begin passive RMA access epoch with specified process.
 static void begin_RMA_epoch_one(MPI_Win win, int rank)
 {
-    //MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, win);
-    MPI_Win_lock(MPI_LOCK_EXCLUSIVE, rank, 0, win);
+    MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, win);
+    //MPI_Win_lock(MPI_LOCK_EXCLUSIVE, rank, 0, win);
 }
 
 // begin_RMA_epoch_all: Begin passive RMA access epoch with all processes.
@@ -155,7 +161,7 @@ static void end_RMA_epoch_all(MPI_Win win)
     MPI_Win_unlock_all(win);
 }
 
-// mutex_lock:
+// mutex_lock: Test and set lock.
 static void mutex_lock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
 {
     do {
@@ -170,28 +176,7 @@ static void mutex_lock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
     }
 }
 
-// mutex_ttas_lock: Test and test-and-test lock
-static void mutex_ttas_lock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
-{
-    do {
-        // MPI_Fetch_and_op(&lock->locked, &lock->result, MPI_INT, rank, lockdisp, MPI_NO_OP, win);
-        // MPI_Win_flush(rank, win);
-        
-        // DEADLOCK!
-        while (lock->state == lock->locked) {
-            printf("P%d: %d rank is locked. Lurking...\n", myrank, rank);
-            sleep(1);
-            continue;
-        }
-
-        MPI_Compare_and_swap(&lock->locked, &lock->unlocked,
-                             &lock->result, MPI_INT, rank, lockdisp, win);
-        MPI_Win_flush(rank, win);
-
-    } while (lock->result == lock->locked);
-}
-
-// mutex_trylock:
+// mutex_trylock: Try to lock mutex and return code.
 static int mutex_trylock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
 {
     MPI_Compare_and_swap(&lock->locked, &lock->unlocked,
@@ -210,13 +195,112 @@ static int mutex_trylock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
     }
 }
 
-// mutex_unlock:
+// mutex_unlock: Unlock mutex.
 static void mutex_unlock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
 {
     MPI_Accumulate(&lock->unlocked, 1, MPI_INT, rank, lockdisp, 1, MPI_INT, MPI_REPLACE, win);
 
     if (ISDBG) {
         printf("%d \t release %d\n", myrank, rank);
+    }
+}
+
+// get_lock_state: Get lock state of the specified process.
+static int get_lock_state(MPI_Win win, MPI_Aint lockdisp, int rank)
+{
+    int result;
+    int *tmp;
+
+    // MPI_Get_accumulate(tmp, 1, MPI_INT, &result, 1, MPI_INT, rank, lockdisp, 1, MPI_INT, MPI_NO_OP, win);
+    MPI_Fetch_and_op(tmp, &result, MPI_INT, rank, lockdisp, MPI_NO_OP, win);
+    MPI_Win_flush(rank, win);
+
+    return result;
+}
+
+// mutex_ttas_lock: Test and test-and-test lock.
+static void mutex_ttas_lock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
+{
+    // *** DEBUG ***
+    // int lock_state = get_lock_state(win, lockdisp, rank);
+    // printf("P%d: lock_state = %d\n", rank, lock_state);
+
+    do {
+        while (get_lock_state(win, lockdisp, rank)) {
+            // printf("P%d: %d rank is locked. Lurking...\n", myrank, rank);
+            continue;
+        }
+
+        MPI_Compare_and_swap(&lock->locked, &lock->unlocked,
+                             &lock->result, MPI_INT, rank, lockdisp, win);
+        MPI_Win_flush(rank, win);
+    } while (lock->result == lock->locked); 
+
+    if (ISDBG) {
+        printf("%d \t CAS lock %d\n", myrank, lock->result);
+        printf("%d \t acquire %d\n", myrank, rank);
+    }
+}
+
+// mutex_ttas_trylock: Try Test and test-and-test lock.
+static int mutex_ttas_trylock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
+{
+    // *** DEBUG ***
+    // int lock_state = get_lock_state(win, lockdisp, rank);
+    // printf("P%d: lock_state = %d\n", rank, lock_state);
+
+    while (get_lock_state(win, lockdisp, rank)) {
+        // printf("P%d: %d rank is locked. Lurking...\n", myrank, rank);
+        continue;
+    }
+
+    MPI_Compare_and_swap(&lock->locked, &lock->unlocked,
+                         &lock->result, MPI_INT, rank, lockdisp, win);
+    MPI_Win_flush(rank, win);
+
+    if (lock->result == lock->unlocked) {
+        if (ISDBG) {
+            printf("%d \t CAS lock %d\n", myrank, lock->result);
+            printf("%d \t acquire %d\n", myrank, rank);
+        }
+        return CODE_TRYLOCK_SUCCESS;
+    } else {
+        return CODE_TRYLOCK_BUSY;
+    }
+}
+
+// mutex_backoff_lock: Exponential Backoff Lock.
+static int mutex_backoff_lock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
+{
+    // *** DEBUG ***
+    // int lock_state = get_lock_state(win, lockdisp, rank);
+    // printf("P%d: lock_state = %d\n", rank, lock_state);
+
+    int delay = MIN_DELAY;
+
+    for (;;) {
+        while (get_lock_state(win, lockdisp, rank)) {
+            // printf("P%d: %d rank is locked. Lurking...\n", myrank, rank);
+            continue;
+        }
+
+        MPI_Compare_and_swap(&lock->locked, &lock->unlocked,
+                             &lock->result, MPI_INT, rank, lockdisp, win);
+        MPI_Win_flush(rank, win);
+
+        if (lock->result == lock->unlocked) {
+            if (ISDBG) {
+                printf("%d \t CAS lock %d\n", myrank, lock->result);
+                printf("%d \t acquire %d\n", myrank, rank);
+            }
+            return CODE_SUCCESS;
+        }
+
+        usleep(get_rand(delay));
+
+        if (delay < MAX_DELAY) {
+            delay *= 2;
+        }
     }
 }
 
@@ -304,18 +388,14 @@ int buf_push_proc(Elem_t elem, Buf_t *buf, int rank)
      */
 
     begin_RMA_epoch_one(buf->win, rank);
-
-    //mutex_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
     
-    // mutex_trylock is better
-    //mutex_trylock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
-    
-    printf("P%d: Enter CS... Lock state of P%d = %d, time = %f\n", myrank, rank, buf->lock.state, time);     // *** DEBUG ***
+    // mutex_trylock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
+    // mutex_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
 
-    mutex_ttas_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
-    //mutex_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
-
-    printf("P%d: Leave CS... Lock state of P%d = %d, time = %f\n", myrank, rank, buf->lock.state, time);     // *** DEBUG ***
+    // TTAS & Backoff locks
+    mutex_ttas_trylock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
+    // mutex_ttas_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
+    // mutex_backoff_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
 
     Buf_state_t state;
 
@@ -337,8 +417,6 @@ int buf_push_proc(Elem_t elem, Buf_t *buf, int rank)
     
     mutex_unlock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
 
-    printf("P%d: Unlock stage... Lock state of P%d = %d, time = %f\n", myrank, rank, buf->lock.state, time);     // *** DEBUG ***
-
     end_RMA_epoch_one(buf->win, rank);
 
     return CODE_SUCCESS;
@@ -359,10 +437,13 @@ int buf_pop_proc(Elem_t *elem, Buf_t *buf, int rank)
 
     begin_RMA_epoch_one(buf->win, rank);
 
-    //mutex_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
-
-    // mutex_trylock is better
     mutex_trylock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
+    // mutex_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
+
+    // TTAS & Backoff locks
+    // mutex_ttas_trylock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
+    // mutex_ttas_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
+    // mutex_backoff_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
 
     Buf_state_t state;
 
@@ -388,7 +469,7 @@ int buf_pop_proc(Elem_t *elem, Buf_t *buf, int rank)
 }
 
 // buf_tryfetch_elem: Try to lock mutex and get an element from proc's
-// buffer (not increment top pointer and finalize epoch and critical section)
+// buffer (not increment top pointer and finalize epoch and critical section).
 static int buf_tryfetch_elem(Elem_t *elem, Buf_state_t *state,
                              Buf_t *buf, int rank)
 {
@@ -400,6 +481,7 @@ static int buf_tryfetch_elem(Elem_t *elem, Buf_state_t *state,
 
     int rc = mutex_trylock(&buf->lock, buf->win, 
                             buf->lockdisp[rank], rank);
+    // int rc = mutex_ttas_trylock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
 
     if (rc == CODE_TRYLOCK_SUCCESS) {
         get_buf_state(buf->win, buf->basedisp[rank], rank, state);
@@ -454,9 +536,6 @@ int buf_push(Val_t val, Buf_t *buf)
     do {
         int rank = get_rand(buf->nproc);
 
-        printf("P%d: Random = %d, time = %f\n", myrank, rank, time);     /*** DEBUG ***/
-        //getchar();                                      /*** DEBUG ***/
-
         Elem_t elem;
         elem.val = val;
         elem.ts = get_timestamp() + buf->ts_offset;
@@ -487,7 +566,7 @@ static bool isfound(int key, int *base, int nelem)
     return false;
 }
 
-// buf_pop:
+// buf_pop: Pop an element from stack. 
 int buf_pop(Val_t *val, Buf_t *buf)
 {
     Elem_t elem_cand[NSTACKS_REMOVE];
@@ -599,7 +678,7 @@ void buf_free(Buf_t *buf)
     MPI_Free_mem(buf->lockdisp);
 }
 
-// buf_print: Print buffer
+// buf_print: Print buffer.
 void buf_print(Buf_t *buf, const char *label)
 {
     printf("%d \t %s \t ", myrank, label);
