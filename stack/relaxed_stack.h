@@ -11,7 +11,7 @@
 #include <mpi.h>
 
 enum {
-    BUFFER_STARTSIZE      = 1000000,
+    BUFFER_STARTSIZE      = 250000,
     // BUFFER_STARTSIZE      = 1000,
     NSTACKS_REMOVE        = 2,
 

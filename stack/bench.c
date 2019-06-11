@@ -17,12 +17,12 @@
 #include "mpigclock.h"
 
 enum {
-    NPUSH_WARMUP = 200000,
+    NPUSH_WARMUP = 20000,
     // NPUSH_WARMUP = 600,
     // NRANDOPER      = NPUSH_WARMUP / 3,
     NRANDOPER      = NPUSH_WARMUP / 2,
     // NRUNS = 1
-    NRUNS          = 50
+    NRUNS          = 20
 };
 
 int myrank = 0, nproc = 0;
@@ -32,7 +32,8 @@ bool ISDBG = false;
 // warm_up: Push sufficient number of elements for warm up.
 void warm_up(Buf_t *buf, int npush_warm_up_per_proc)
 {
-    for (int i = 0; i < npush_warm_up_per_proc; i++) {
+    int i;
+    for (i = 0; i < npush_warm_up_per_proc; i++) {
         Val_t val = (myrank + 1) * 10 + i;
         buf_push(val, buf);
     }
@@ -42,7 +43,8 @@ void warm_up(Buf_t *buf, int npush_warm_up_per_proc)
 // Not relaxed stack warm up.
 void warm_up_proc(Buf_t *buf, int npush_warm_up_per_proc)
 {
-    for (int i = 0; i < npush_warm_up_per_proc; i++) {
+    int i;
+    for (i = 0; i < npush_warm_up_per_proc; i++) {
         Elem_t elem;
         elem.val = (myrank + 1) * 10 + i;
 
@@ -54,7 +56,8 @@ void warm_up_proc(Buf_t *buf, int npush_warm_up_per_proc)
 // for the whole buffer.
 void test_randopers(Buf_t *buf, int nrandoper_per_proc)
 {
-    for (int i = 0; i < nrandoper_per_proc; i++) {
+    int i;
+    for (i = 0; i < nrandoper_per_proc; i++) {
         Val_t val = 0;
 
         if (get_rand(2) == 0) {
@@ -70,7 +73,8 @@ void test_randopers(Buf_t *buf, int nrandoper_per_proc)
 void test_randopers_proc(Buf_t *buf, int nrandoper_per_proc)
 {
     if (myrank != 0) {
-        for (int i = 0; i < nrandoper_per_proc; i++) {
+        int i;
+        for (i = 0; i < nrandoper_per_proc; i++) {
             Elem_t elem;
             elem.val = 0;
             int remote_rank = 0;
@@ -90,7 +94,8 @@ void test_push_pop_debug(Buf_t *buf, MPI_Comm comm)
 {
     int rc;
 
-    for (int i = 0; i < 3; i++) {
+    int i;
+    for (i = 0; i < 3; i++) {
         Val_t val = (myrank + 1) * 10 + i;
         rc = buf_push(val, buf);
 
@@ -106,7 +111,7 @@ void test_push_pop_debug(Buf_t *buf, MPI_Comm comm)
     MPI_Barrier(comm);
     usleep(1000);
 
-    for (int i = 0; i < 3; i++) {
+    for (i = 0; i < 3; i++) {
         // printf("%d \t iter %d\n", myrank, i);
         Val_t val = 0;
         buf_pop(&val, buf);
@@ -114,7 +119,9 @@ void test_push_pop_debug(Buf_t *buf, MPI_Comm comm)
 
     MPI_Barrier(comm);
     usleep(myrank * 1000);
+
     buf_print(buf, "POP");
+
     MPI_Barrier(comm);
     usleep(1000);
 }
@@ -127,7 +134,8 @@ void test_push_pop_proc(Buf_t *buf, MPI_Comm comm)
     buf_print(buf, "before");
     Elem_t elem;
 
-    for (int i = 0; i < 25; i++) {
+    int i;
+    for (i = 0; i < 25; i++) {
         elem.val = (myrank + 1) * 10 + i;
         buf_push_proc(elem, buf, remote_rank);
 
@@ -135,7 +143,7 @@ void test_push_pop_proc(Buf_t *buf, MPI_Comm comm)
         // buf_print(buf, "PUSH");
     }
 
-    for (int i = 0; i < 25; i++) {
+    for (i = 0; i < 25; i++) {
         buf_pop_proc(&elem, buf, remote_rank);
 
         MPI_Barrier(comm);
@@ -178,7 +186,8 @@ int main(int argc, char *argv[])
 
     double telapsed_sum = 0.0;
 
-    for (int i = 0; i < NRUNS; i++) {
+    int i;
+    for (i = 0; i < NRUNS; i++) {
         MPI_Barrier(MPI_COMM_WORLD);
 
         double tbegin = MPI_Wtime();

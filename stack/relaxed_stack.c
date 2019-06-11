@@ -13,9 +13,7 @@
 #include <errno.h>
 #include <stddef.h>
 #include <stdbool.h>
-
 #include <unistd.h>
-
 #include <mpi.h>
 
 #include "relaxed_stack.h"
@@ -26,7 +24,6 @@ Buf_info_t buf_info;
 extern bool ISDBG;
 
 extern int myrank;
-extern double time;
 
 // error_msg: Print error message.
 void error_msg(const char *msg, int _errno)
@@ -62,7 +59,8 @@ static int disps_init(Buf_t *buf)
     MPI_Allgather(&buf->basedisp_local, 1, MPI_AINT, buf->basedisp, 1, MPI_AINT, buf->comm);
     MPI_Allgather(&buf->datadisp_local, 1, MPI_AINT, buf->datadisp, 1, MPI_AINT, buf->comm);
 
-    for (int rank = 0; rank < buf->nproc; rank++) {
+    int rank;
+    for (rank = 0; rank < buf->nproc; rank++) {
         buf->lockdisp[rank] = MPI_Aint_add(buf->basedisp[rank], buf_info.lock_state_offset);
     }
 
@@ -139,8 +137,8 @@ int buf_init(Buf_t **buf, int size, MPI_Comm comm)
 // begin_RMA_epoch_one: Begin passive RMA access epoch with specified process.
 static void begin_RMA_epoch_one(MPI_Win win, int rank)
 {
-    MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, win);
-    //MPI_Win_lock(MPI_LOCK_EXCLUSIVE, rank, 0, win);
+    //MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, win);
+    MPI_Win_lock(MPI_LOCK_EXCLUSIVE, rank, 0, win);
 }
 
 // begin_RMA_epoch_all: Begin passive RMA access epoch with all processes.
@@ -209,9 +207,8 @@ static void mutex_unlock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
 static int get_lock_state(MPI_Win win, MPI_Aint lockdisp, int rank)
 {
     int result;
-    int *tmp;
+    int *tmp = 0;
 
-    // MPI_Get_accumulate(tmp, 1, MPI_INT, &result, 1, MPI_INT, rank, lockdisp, 1, MPI_INT, MPI_NO_OP, win);
     MPI_Fetch_and_op(tmp, &result, MPI_INT, rank, lockdisp, MPI_NO_OP, win);
     MPI_Win_flush(rank, win);
 
@@ -239,33 +236,6 @@ static void mutex_ttas_lock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int ra
     if (ISDBG) {
         printf("%d \t CAS lock %d\n", myrank, lock->result);
         printf("%d \t acquire %d\n", myrank, rank);
-    }
-}
-
-// mutex_ttas_trylock: Try Test and test-and-test lock.
-static int mutex_ttas_trylock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
-{
-    // *** DEBUG ***
-    // int lock_state = get_lock_state(win, lockdisp, rank);
-    // printf("P%d: lock_state = %d\n", rank, lock_state);
-
-    while (get_lock_state(win, lockdisp, rank)) {
-        // printf("P%d: %d rank is locked. Lurking...\n", myrank, rank);
-        continue;
-    }
-
-    MPI_Compare_and_swap(&lock->locked, &lock->unlocked,
-                         &lock->result, MPI_INT, rank, lockdisp, win);
-    MPI_Win_flush(rank, win);
-
-    if (lock->result == lock->unlocked) {
-        if (ISDBG) {
-            printf("%d \t CAS lock %d\n", myrank, lock->result);
-            printf("%d \t acquire %d\n", myrank, rank);
-        }
-        return CODE_TRYLOCK_SUCCESS;
-    } else {
-        return CODE_TRYLOCK_BUSY;
     }
 }
 
@@ -370,8 +340,8 @@ static void inc_top(MPI_Win win, MPI_Aint basedisp, int *top, int size,
     *top = *top + 1;
     
     MPI_Accumulate(top, 1, MPI_INT, rank,
-            MPI_Aint_add(basedisp, buf_info.top_offset),
-            1, MPI_INT, MPI_REPLACE, win);
+                   MPI_Aint_add(basedisp, buf_info.top_offset),
+                   1, MPI_INT, MPI_REPLACE, win);
 }
 
 // buf_push_proc: Push an element to the top of the buffer
@@ -390,10 +360,9 @@ int buf_push_proc(Elem_t elem, Buf_t *buf, int rank)
     begin_RMA_epoch_one(buf->win, rank);
     
     // mutex_trylock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
-    // mutex_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
+    mutex_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
 
     // TTAS & Backoff locks
-    mutex_ttas_trylock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
     // mutex_ttas_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
     // mutex_backoff_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
 
@@ -558,7 +527,8 @@ int buf_push(Val_t val, Buf_t *buf)
 // isfound: Search for key in base.
 static bool isfound(int key, int *base, int nelem)
 {
-    for (int i = 0; i < nelem; i++) {
+    int i;
+    for (i = 0; i < nelem; i++) {
         if (base[i] == key) {
             return true;
         }
@@ -614,7 +584,9 @@ int buf_pop(Val_t *val, Buf_t *buf)
                 // FIXME not all but some of them?
                 if (nattempts > buf->max_attempts) {
                     printf("%d \t DEADLOCK?\n", myrank);
-                    for (int i = 0; i < curr_nstacks; i++) {
+
+                    int i;
+                    for (i = 0; i < curr_nstacks; i++) {
                         mutex_unlock(&buf->lock, buf->win,
                                      buf->lockdisp[ranks[i]], ranks[i]);
                     }
@@ -644,7 +616,8 @@ int buf_pop(Val_t *val, Buf_t *buf)
     *val = elem_cand[0].val;
     int best_rank = ranks[0];
 
-    for (int i = 1; i < nstacks_remove; i++) {
+    int i;
+    for (i = 1; i < nstacks_remove; i++) {
         if (elem_cand[i].ts < ts_min) {
             ts_min = elem_cand[i].ts;
             *val = elem_cand[i].val;
@@ -655,7 +628,7 @@ int buf_pop(Val_t *val, Buf_t *buf)
     // printf("%d \t rank %d is the best with ts %f\n", myrank, best_rank, ts_min);
 
     // Finalize epochs and critical sections
-    for (int i = 0; i < nstacks_remove; i++) {
+    for (i = 0; i < nstacks_remove; i++) {
         bool remove_flag = (ranks[i] == best_rank);
 
         buf_get_elem_finalize(states[i], buf, ranks[i], remove_flag);
@@ -683,7 +656,8 @@ void buf_print(Buf_t *buf, const char *label)
 {
     printf("%d \t %s \t ", myrank, label);
     
-    for (int i = 0; i < buf->state.size; i++) {
+    int i;
+    for (i = 0; i < buf->state.size; i++) {
         printf("%d ", buf->data[i].val);
 
         if (buf->state.top == i + 1) {
