@@ -19,7 +19,7 @@
 #include "relaxed_stack.h"
 #include "utils.h"
 
-Buf_info_t buf_info;
+buf_info_t buf_info;
 
 extern bool ISDBG;
 
@@ -38,14 +38,14 @@ void error_msg(const char *msg, int _errno)
 // buf_info_init: Init process-oblivious information.
 static void buf_info_init(void)
 {
-    buf_info.state_offset = offsetof(Buf_t, state);
-    buf_info.top_offset = buf_info.state_offset + offsetof(Buf_state_t, top);
-    buf_info.lock_state_offset = offsetof(Buf_t, lock) + offsetof(Lock_t, state);
-    buf_info.buf_offset = offsetof(Buf_t, data);
+    buf_info.state_offset = offsetof(buf_t, state);
+    buf_info.top_offset = buf_info.state_offset + offsetof(buf_state_t, top);
+    buf_info.lock_state_offset = offsetof(buf_t, lock) + offsetof(lock_t, state);
+    buf_info.buf_offset = offsetof(buf_t, data);
 }
 
 // disps_init: Initialize array for displacements of all processes.
-static int disps_init(Buf_t *buf)
+static int disps_init(buf_t *buf)
 {
     MPI_Alloc_mem(sizeof(MPI_Aint) * buf->nproc, MPI_INFO_NULL, &buf->basedisp);
     MPI_Alloc_mem(sizeof(MPI_Aint) * buf->nproc, MPI_INFO_NULL, &buf->datadisp);
@@ -68,9 +68,9 @@ static int disps_init(Buf_t *buf)
 }
 
 // buf_init: Init buffer with specified size.
-int buf_init(Buf_t **buf, int size, MPI_Comm comm)
+int buf_init(buf_t **buf, int size, MPI_Comm comm)
 {
-    MPI_Alloc_mem(sizeof(Buf_t), MPI_INFO_NULL, buf);
+    MPI_Alloc_mem(sizeof(buf_t), MPI_INFO_NULL, buf);
     if (*buf == NULL) {
         error_msg("MPI_Alloc_mem() failed for buf", errno);
         return CODE_ERROR;
@@ -82,7 +82,7 @@ int buf_init(Buf_t **buf, int size, MPI_Comm comm)
 
     MPI_Get_address(*buf, &(*buf)->basedisp_local);
 
-    const int size_bytes = sizeof(Elem_t) * size;
+    const int size_bytes = sizeof(elem_t) * size;
     //printf("size = %d\n", size_bytes);
 
     // Physical buffer memory allocation
@@ -109,7 +109,7 @@ int buf_init(Buf_t **buf, int size, MPI_Comm comm)
 
     MPI_Win_create_dynamic(MPI_INFO_NULL, (*buf)->comm, &(*buf)->win);
 
-    MPI_Win_attach((*buf)->win, *buf, sizeof(Buf_t));
+    MPI_Win_attach((*buf)->win, *buf, sizeof(buf_t));
     MPI_Win_attach((*buf)->win, (*buf)->data, size_bytes);
 
     int rc = disps_init(*buf);
@@ -160,7 +160,7 @@ static void end_RMA_epoch_all(MPI_Win win)
 }
 
 // mutex_lock: Test and set lock.
-static void mutex_lock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
+static void mutex_lock(lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
 {
     do {
         MPI_Compare_and_swap(&lock->locked, &lock->unlocked,
@@ -175,7 +175,7 @@ static void mutex_lock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
 }
 
 // mutex_trylock: Try to lock mutex and return code.
-static int mutex_trylock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
+static int mutex_trylock(lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
 {
     MPI_Compare_and_swap(&lock->locked, &lock->unlocked,
                          &lock->result, MPI_INT, rank, lockdisp, win);
@@ -194,7 +194,7 @@ static int mutex_trylock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
 }
 
 // mutex_unlock: Unlock mutex.
-static void mutex_unlock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
+static void mutex_unlock(lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
 {
     MPI_Accumulate(&lock->unlocked, 1, MPI_INT, rank, lockdisp, 1, MPI_INT, MPI_REPLACE, win);
 
@@ -216,7 +216,7 @@ static int get_lock_state(MPI_Win win, MPI_Aint lockdisp, int rank)
 }
 
 // mutex_ttas_lock: Test and test-and-test lock.
-static void mutex_ttas_lock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
+static void mutex_ttas_lock(lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
 {
     // *** DEBUG ***
     // int lock_state = get_lock_state(win, lockdisp, rank);
@@ -240,7 +240,7 @@ static void mutex_ttas_lock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int ra
 }
 
 // mutex_backoff_lock: Exponential Backoff Lock.
-static int mutex_backoff_lock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
+static int mutex_backoff_lock(lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int rank)
 {
     // *** DEBUG ***
     // int lock_state = get_lock_state(win, lockdisp, rank);
@@ -275,47 +275,47 @@ static int mutex_backoff_lock(Lock_t *lock, MPI_Win win, MPI_Aint lockdisp, int 
 }
 
 // isempty: Check if buffer is empty.
-static bool isempty(Buf_state_t state)
+static bool isempty(buf_state_t state)
 {
     return state.top == 0;
 }
 
 // isfull: Check if buffer is full.
-static bool isfull(Buf_t *buf, Buf_state_t state)
+static bool isfull(buf_t *buf, buf_state_t state)
 {
     return state.top == state.size;
 }
 
 // get_buf_state: Get state of remote buffer.
-static void get_buf_state(MPI_Win win, MPI_Aint basedisp, int rank, Buf_state_t *state)
+static void get_buf_state(MPI_Win win, MPI_Aint basedisp, int rank, buf_state_t *state)
 {
-    Elem_t tmp_result;
-    MPI_Get(state, sizeof(Buf_state_t), MPI_BYTE, rank,
+    elem_t tmp_result;
+    MPI_Get(state, sizeof(buf_state_t), MPI_BYTE, rank,
             MPI_Aint_add(basedisp, buf_info.state_offset),
-            sizeof(Buf_state_t), MPI_BYTE, win);
+            sizeof(buf_state_t), MPI_BYTE, win);
     
     // Flush, because we will use elem in this epoch
     MPI_Win_flush(rank, win);
 }
 
 // put_elem: Insert element into remote buffer.
-static void put_elem(Buf_t *buf, MPI_Win win, MPI_Aint datadisp, int top,
-                     int rank, Elem_t elem)
+static void put_elem(buf_t *buf, MPI_Win win, MPI_Aint datadisp, int top,
+                     int rank, elem_t elem)
 {
-    MPI_Accumulate(&elem, sizeof(Elem_t), MPI_BYTE, rank,
-                   MPI_Aint_add(datadisp, sizeof(Elem_t) * top),
-                   sizeof(Elem_t), MPI_BYTE, MPI_REPLACE, win);
+    MPI_Accumulate(&elem, sizeof(elem_t), MPI_BYTE, rank,
+                   MPI_Aint_add(datadisp, sizeof(elem_t) * top),
+                   sizeof(elem_t), MPI_BYTE, MPI_REPLACE, win);
 }
 
 // get_elem: Get element from remote buffer
 static void get_elem(MPI_Win win, MPI_Aint datadisp, int top,
-                     int rank, Elem_t *elem)
+                     int rank, elem_t *elem)
 {   
-    Elem_t tmp_result;
-    MPI_Get_accumulate(elem, sizeof(Elem_t), MPI_BYTE,
-                       &tmp_result, sizeof(Elem_t), MPI_BYTE, rank,
-                       MPI_Aint_add(datadisp, sizeof(Elem_t) * top),
-                       sizeof(Elem_t), MPI_BYTE, MPI_NO_OP, win);
+    elem_t tmp_result;
+    MPI_Get_accumulate(elem, sizeof(elem_t), MPI_BYTE,
+                       &tmp_result, sizeof(elem_t), MPI_BYTE, rank,
+                       MPI_Aint_add(datadisp, sizeof(elem_t) * top),
+                       sizeof(elem_t), MPI_BYTE, MPI_NO_OP, win);
     
 
     // Flush, because we will use elem in this epoch
@@ -346,7 +346,7 @@ static void inc_top(MPI_Win win, MPI_Aint basedisp, int *top, int size,
 
 // buf_push_proc: Push an element to the top of the buffer
 // on specified process.
-int buf_push_proc(Elem_t elem, Buf_t *buf, int rank)
+int buf_push_proc(elem_t elem, buf_t *buf, int rank)
 {
     /*
      * 1. Acquire lock.
@@ -366,7 +366,7 @@ int buf_push_proc(Elem_t elem, Buf_t *buf, int rank)
     // mutex_ttas_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
     // mutex_backoff_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
 
-    Buf_state_t state;
+    buf_state_t state;
 
     get_buf_state(buf->win, buf->basedisp[rank], rank, &state);
 
@@ -393,7 +393,7 @@ int buf_push_proc(Elem_t elem, Buf_t *buf, int rank)
 
 // buf_pop_proc: Remove an element from the buffer
 // on specified process.
-int buf_pop_proc(Elem_t *elem, Buf_t *buf, int rank)
+int buf_pop_proc(elem_t *elem, buf_t *buf, int rank)
 {
     /*
      * 1. Acquire lock.
@@ -406,15 +406,14 @@ int buf_pop_proc(Elem_t *elem, Buf_t *buf, int rank)
 
     begin_RMA_epoch_one(buf->win, rank);
 
-    mutex_trylock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
-    // mutex_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
+    // mutex_trylock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
+    mutex_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
 
     // TTAS & Backoff locks
-    // mutex_ttas_trylock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
     // mutex_ttas_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
     // mutex_backoff_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
 
-    Buf_state_t state;
+    buf_state_t state;
 
     get_buf_state(buf->win, buf->basedisp[rank], rank, &state);
 
@@ -439,8 +438,8 @@ int buf_pop_proc(Elem_t *elem, Buf_t *buf, int rank)
 
 // buf_tryfetch_elem: Try to lock mutex and get an element from proc's
 // buffer (not increment top pointer and finalize epoch and critical section).
-static int buf_tryfetch_elem(Elem_t *elem, Buf_state_t *state,
-                             Buf_t *buf, int rank)
+static int buf_tryfetch_elem(elem_t *elem, buf_state_t *state,
+                             buf_t *buf, int rank)
 {
     /* 1. Acquire lock.
      * 2. Remotely get state of buffer.
@@ -450,7 +449,6 @@ static int buf_tryfetch_elem(Elem_t *elem, Buf_state_t *state,
 
     int rc = mutex_trylock(&buf->lock, buf->win, 
                             buf->lockdisp[rank], rank);
-    // int rc = mutex_ttas_trylock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
 
     if (rc == CODE_TRYLOCK_SUCCESS) {
         get_buf_state(buf->win, buf->basedisp[rank], rank, state);
@@ -473,8 +471,8 @@ static int buf_tryfetch_elem(Elem_t *elem, Buf_state_t *state,
 
 // buf_get_elem_finalize: Complete all epochs, release lock
 // and optionally refresh top. Remove_flag signs if element is removing.
-static void buf_get_elem_finalize(Buf_state_t state,
-                                  Buf_t *buf, int rank,
+static void buf_get_elem_finalize(buf_state_t state,
+                                  buf_t *buf, int rank,
                                   bool remove_flag)
 {
     /*
@@ -497,7 +495,7 @@ static double get_timestamp(void)
 }
 
 // buf_push: Choose randomly the stack and push element into it.
-int buf_push(Val_t val, Buf_t *buf)
+int buf_push(val_t val, buf_t *buf)
 {
     int rc;
     int avail_stacks = buf->nproc;
@@ -505,7 +503,7 @@ int buf_push(Val_t val, Buf_t *buf)
     do {
         int rank = get_rand(buf->nproc);
 
-        Elem_t elem;
+        elem_t elem;
         elem.val = val;
         elem.ts = get_timestamp() + buf->ts_offset;
 
@@ -537,10 +535,10 @@ static bool isfound(int key, int *base, int nelem)
 }
 
 // buf_pop: Pop an element from stack. 
-int buf_pop(Val_t *val, Buf_t *buf)
+int buf_pop(val_t *val, buf_t *buf)
 {
-    Elem_t elem_cand[NSTACKS_REMOVE];
-    Buf_state_t states[NSTACKS_REMOVE];
+    elem_t elem_cand[NSTACKS_REMOVE];
+    buf_state_t states[NSTACKS_REMOVE];
     int ranks[NSTACKS_REMOVE];
 
     // Number of stacks for candidates
@@ -640,7 +638,7 @@ int buf_pop(Val_t *val, Buf_t *buf)
 }
 
 // buf_free: Free memory and so on.
-void buf_free(Buf_t *buf)
+void buf_free(buf_t *buf)
 {
     MPI_Barrier(buf->comm);
 
@@ -652,7 +650,7 @@ void buf_free(Buf_t *buf)
 }
 
 // buf_print: Print buffer.
-void buf_print(Buf_t *buf, const char *label)
+void buf_print(buf_t *buf, const char *label)
 {
     printf("%d \t %s \t ", myrank, label);
     

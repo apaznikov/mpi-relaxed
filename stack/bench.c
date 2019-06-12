@@ -30,22 +30,22 @@ int myrank = 0, nproc = 0;
 bool ISDBG = false;
 
 // warm_up: Push sufficient number of elements for warm up.
-void warm_up(Buf_t *buf, int npush_warm_up_per_proc)
+void warm_up(buf_t *buf, int npush_warm_up_per_proc)
 {
     int i;
     for (i = 0; i < npush_warm_up_per_proc; i++) {
-        Val_t val = (myrank + 1) * 10 + i;
+        val_t val = (myrank + 1) * 10 + i;
         buf_push(val, buf);
     }
 }
 
 // warm_up_proc: All elements will be pushed only to one process.
 // Not relaxed stack warm up.
-void warm_up_proc(Buf_t *buf, int npush_warm_up_per_proc)
+void warm_up_proc(buf_t *buf, int npush_warm_up_per_proc)
 {
     int i;
     for (i = 0; i < npush_warm_up_per_proc; i++) {
-        Elem_t elem;
+        elem_t elem;
         elem.val = (myrank + 1) * 10 + i;
 
         buf_push_proc(elem, buf, myrank);
@@ -54,11 +54,11 @@ void warm_up_proc(Buf_t *buf, int npush_warm_up_per_proc)
 
 // test_randopers: Test with random operations (push or pop)
 // for the whole buffer.
-void test_randopers(Buf_t *buf, int nrandoper_per_proc)
+void test_randopers(buf_t *buf, int nrandoper_per_proc)
 {
     int i;
     for (i = 0; i < nrandoper_per_proc; i++) {
-        Val_t val = 0;
+        val_t val = 0;
 
         if (get_rand(2) == 0) {
             buf_push(val, buf);
@@ -70,12 +70,12 @@ void test_randopers(Buf_t *buf, int nrandoper_per_proc)
 
 // test_randopers_proc: Test with random operations (push or pop)
 // for the specified process (not distributed buffer).
-void test_randopers_proc(Buf_t *buf, int nrandoper_per_proc)
+void test_randopers_proc(buf_t *buf, int nrandoper_per_proc)
 {
     if (myrank != 0) {
         int i;
         for (i = 0; i < nrandoper_per_proc; i++) {
-            Elem_t elem;
+            elem_t elem;
             elem.val = 0;
             int remote_rank = 0;
 
@@ -90,13 +90,13 @@ void test_randopers_proc(Buf_t *buf, int nrandoper_per_proc)
 
 // test_push_pop_debug: Test push and pop operations
 // for the whole buffer.
-void test_push_pop_debug(Buf_t *buf, MPI_Comm comm)
+void test_push_pop_debug(buf_t *buf, MPI_Comm comm)
 {
     int rc;
 
     int i;
     for (i = 0; i < 3; i++) {
-        Val_t val = (myrank + 1) * 10 + i;
+        val_t val = (myrank + 1) * 10 + i;
         rc = buf_push(val, buf);
 
         if (rc == CODE_SUCCESS)
@@ -113,7 +113,7 @@ void test_push_pop_debug(Buf_t *buf, MPI_Comm comm)
 
     for (i = 0; i < 3; i++) {
         // printf("%d \t iter %d\n", myrank, i);
-        Val_t val = 0;
+        val_t val = 0;
         buf_pop(&val, buf);
     }
 
@@ -128,11 +128,11 @@ void test_push_pop_debug(Buf_t *buf, MPI_Comm comm)
 
 // test_push_pop_proc: Test push and pop operations for specific
 // processes (not distributed buffer).
-void test_push_pop_proc(Buf_t *buf, MPI_Comm comm)
+void test_push_pop_proc(buf_t *buf, MPI_Comm comm)
 {
     int remote_rank = 0;
     buf_print(buf, "before");
-    Elem_t elem;
+    elem_t elem;
 
     int i;
     for (i = 0; i < 25; i++) {
@@ -158,7 +158,7 @@ int main(int argc, char *argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
     MPI_Comm_size(MPI_COMM_WORLD, &nproc);
 
-    Buf_t *buf;
+    buf_t *buf;
 
     int rc = buf_init(&buf, BUFFER_STARTSIZE, MPI_COMM_WORLD);
 
