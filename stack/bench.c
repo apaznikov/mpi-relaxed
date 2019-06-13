@@ -21,8 +21,8 @@ enum {
     // NPUSH_WARMUP = 600,
     // NRANDOPER      = NPUSH_WARMUP / 3,
     NRANDOPER      = NPUSH_WARMUP / 2,
-    // NRUNS = 1
-    NRUNS          = 20
+    NRUNS          = 10
+    // NRUNS          = 1
 };
 
 int myrank = 0, nproc = 0;

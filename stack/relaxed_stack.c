@@ -303,8 +303,9 @@ static void put_elem(buf_t *buf, MPI_Win win, MPI_Aint datadisp, int top,
                      int rank, elem_t elem)
 {
     MPI_Accumulate(&elem, sizeof(elem_t), MPI_BYTE, rank,
-                   MPI_Aint_add(datadisp, sizeof(elem_t) * top),
-                   sizeof(elem_t), MPI_BYTE, MPI_REPLACE, win);
+                  MPI_Aint_add(datadisp, sizeof(elem_t) * top),
+                  sizeof(elem_t), MPI_BYTE, MPI_REPLACE, win);
+    
 }
 
 // get_elem: Get element from remote buffer
@@ -316,7 +317,6 @@ static void get_elem(MPI_Win win, MPI_Aint datadisp, int top,
                        &tmp_result, sizeof(elem_t), MPI_BYTE, rank,
                        MPI_Aint_add(datadisp, sizeof(elem_t) * top),
                        sizeof(elem_t), MPI_BYTE, MPI_NO_OP, win);
-    
 
     // Flush, because we will use elem in this epoch
     MPI_Win_flush(rank, win);
@@ -358,11 +358,12 @@ int buf_push_proc(elem_t elem, buf_t *buf, int rank)
      */
 
     begin_RMA_epoch_one(buf->win, rank);
+
     
     // mutex_trylock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
     mutex_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
-
-    // TTAS & Backoff locks
+    
+    // TTaS & Backoff locks
     // mutex_ttas_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
     // mutex_backoff_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
 
@@ -378,11 +379,11 @@ int buf_push_proc(elem_t elem, buf_t *buf, int rank)
 
         return CODE_BUFFER_FULL;
     }
-
+    
     put_elem(buf, buf->win, buf->datadisp[rank], state.top, rank, elem);
-
+    
     inc_top(buf->win, buf->basedisp[rank],
-                &state.top, state.size, rank);
+            &state.top, state.size, rank);
     
     mutex_unlock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
 
@@ -406,6 +407,7 @@ int buf_pop_proc(elem_t *elem, buf_t *buf, int rank)
 
     begin_RMA_epoch_one(buf->win, rank);
 
+    // Choose the lock method.
     // mutex_trylock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
     mutex_lock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
 
@@ -430,7 +432,7 @@ int buf_pop_proc(elem_t *elem, buf_t *buf, int rank)
                 &state.top, state.size, rank);
 
     mutex_unlock(&buf->lock, buf->win, buf->lockdisp[rank], rank);
-
+    
     end_RMA_epoch_one(buf->win, rank);
 
     return CODE_SUCCESS;
@@ -461,7 +463,7 @@ static int buf_tryfetch_elem(elem_t *elem, buf_state_t *state,
         }
 
         get_elem(buf->win, buf->datadisp[rank], state->top,
-                 rank, elem);
+                  rank, elem);
         
         return CODE_SUCCESS;
     } else {
@@ -575,13 +577,14 @@ int buf_pop(val_t *val, buf_t *buf)
             // Count number of attempts to lock the mutex
             // to avoid deadlock (only for 2nd and following stacks)
             if (curr_nstacks > 0) {
+                nattempts++;
                 // If number of attempts is too large,
                 // we suppose it's a deadlock and unlock
                 // all locked stacks
 
                 // FIXME not all but some of them?
                 if (nattempts > buf->max_attempts) {
-                    printf("%d \t DEADLOCK?\n", myrank);
+                    // printf("%d \t DEADLOCK?\n", myrank);
 
                     int i;
                     for (i = 0; i < curr_nstacks; i++) {
@@ -631,7 +634,7 @@ int buf_pop(val_t *val, buf_t *buf)
 
         buf_get_elem_finalize(states[i], buf, ranks[i], remove_flag);
     }
-
+    
     end_RMA_epoch_all(buf->win);
 
     return CODE_SUCCESS;
