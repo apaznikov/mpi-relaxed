@@ -11,8 +11,9 @@
 #include <mpi.h>
 
 enum {
-    BUFFER_STARTSIZE      = 1000000,
+    BUFFER_STARTSIZE      = 120001,
     // BUFFER_STARTSIZE      = 1000,
+
     NSTACKS_REMOVE        = 2,
 
     CODE_SUCCESS          = 0,
@@ -30,42 +31,42 @@ enum {
     MAX_DELAY             = 1000     
 };
 
-typedef int Val_t;
+typedef int val_t;
 
 typedef struct {
-    Val_t val;
+    val_t val;
     double ts;
-} Elem_t;
+} elem_t;
 
 typedef struct {
     int top;
     int size;
-} Buf_state_t;
+} buf_state_t;
 
 typedef struct {
     int state;
     int unlocked;
     int locked;
     int result;
-} Lock_t;
+} lock_t;
 
 // Buffer
 typedef struct {
     MPI_Aint basedisp_local;
     MPI_Aint *basedisp;
     MPI_Aint *lockdisp;
-    Elem_t *data;
+    elem_t *data;
     MPI_Aint datadisp_local;
     MPI_Aint *datadisp;
-    Buf_state_t state;
-    Lock_t lock;
+    buf_state_t state;
+    lock_t lock;
     MPI_Win win;
     MPI_Comm comm;
     int nproc;
     double ts_offset;
     int nstacks_remove;
     int max_attempts;
-} Buf_t;
+} buf_t;
 
 // Process-oblivious buffer info
 typedef struct {
@@ -73,28 +74,28 @@ typedef struct {
     size_t state_offset;
     size_t top_offset;
     size_t buf_offset;
-} Buf_info_t;
+} buf_info_t;
 
 // buf_init: Init buffer with specified size.
-int buf_init(Buf_t **buf, int size, MPI_Comm comm);
+int buf_init(buf_t **buf, int size, MPI_Comm comm);
 
 // buf_free: Free memory and so on.
-void buf_free(Buf_t *buf);
+void buf_free(buf_t *buf);
 
 // buf_push: Choose randomly the stack and push element into it.
-int buf_push(Val_t val, Buf_t *buf);
+int buf_push(val_t val, buf_t *buf);
 
 // buf_pop: 
-int buf_pop(Val_t *val, Buf_t *buf);
+int buf_pop(val_t *val, buf_t *buf);
 
 // buf_push_proc: Push an element on specified process.
-int buf_push_proc(Elem_t elem, Buf_t *buf, int rank);
+int buf_push_proc(elem_t elem, buf_t *buf, int rank);
 
 // buf_pop_proc: Remove an element from the buffer on specified process.
-int buf_pop_proc(Elem_t *elem, Buf_t *buf, int rank);
+int buf_pop_proc(elem_t *elem, buf_t *buf, int rank);
 
 // buf_print: Print buffer.
-void buf_print(Buf_t *buf, const char *label);
+void buf_print(buf_t *buf, const char *label);
 
 // error_msg: Print error message.
 void error_msg(const char *msg, int _errno);
